@@ -20,7 +20,7 @@ settings:
 packages:
   Auth0:
     url: https://github.com/auth0/Auth0.swift
-    from: 3.0.0
+    from: 3.1.0
 targets:
   Cookie:
     type: application
