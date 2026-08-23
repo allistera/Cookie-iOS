@@ -6,12 +6,31 @@ enum InboxEmailActions {
     }
 }
 
+/// The top-level sections reachable from the title dropdown. Only `email` is
+/// built out for now; the others render a placeholder.
+enum AppSection: String, CaseIterable, Identifiable {
+    case email = "Email"
+    case calendar = "Calendar"
+    case notes = "Notes"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .email: "tray.fill"
+        case .calendar: "calendar"
+        case .notes: "note.text"
+        }
+    }
+}
+
 struct InboxView: View {
     @Environment(AuthenticationManager.self) private var auth
     let profile: AuthenticationManager.Profile
 
     @State private var showSignOutConfirmation = false
     @State private var showComposer = false
+    @State private var selectedSection: AppSection = .email
     @State private var selectedFilter: EmailFilter?
     @State private var emails: [DummyEmail] = []
     @State private var unreadCount = 0
@@ -88,35 +107,48 @@ struct InboxView: View {
             ZStack(alignment: .bottom) {
                 Color(.systemBackground).ignoresSafeArea()
 
-                List {
-                    header
-                        .listRowInsets(EdgeInsets())
-                        .listRowSeparator(.hidden)
+                if selectedSection != .email {
+                    VStack(spacing: 0) {
+                        header
 
-                    if let loadErrorMessage, emails.isEmpty {
-                        Text(loadErrorMessage)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 24)
+                        switch selectedSection {
+                        case .notes: NotesView()
+                        case .calendar: CalendarView()
+                        case .email: Spacer(minLength: 0)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                } else {
+                    List {
+                        header
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+
+                        if let loadErrorMessage, emails.isEmpty {
+                            Text(loadErrorMessage)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 24)
+                                .listRowInsets(EdgeInsets())
+                                .listRowSeparator(.hidden)
+                        }
+
+                        emailList
+
+                        Color.clear
+                            .frame(height: 90)
                             .listRowInsets(EdgeInsets())
                             .listRowSeparator(.hidden)
                     }
-
-                    emailList
-
-                    Color.clear
-                        .frame(height: 90)
-                        .listRowInsets(EdgeInsets())
-                        .listRowSeparator(.hidden)
-                }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .refreshable {
-                    await refreshEmails()
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .refreshable {
+                        await refreshEmails()
+                    }
                 }
 
-                if isLoadingInitialPage && emails.isEmpty {
+                if selectedSection == .email, isLoadingInitialPage, emails.isEmpty {
                     ProgressView()
                         .controlSize(.large)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -133,14 +165,18 @@ struct InboxView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
 
-                floatingToolbar
+                if selectedSection == .email {
+                    floatingToolbar
+                }
             }
             .task {
                 await loadEmails()
             }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: DummyEmail.self) { email in
-                EmailDetailView(email: email)
+                EmailDetailView(email: email) {
+                    markDone(email)
+                }
             }
             .confirmationDialog("Account", isPresented: $showSignOutConfirmation, titleVisibility: .visible) {
                 Button("Sign Out", role: .destructive) {
@@ -158,20 +194,34 @@ struct InboxView: View {
 
     private var header: some View {
         HStack(alignment: .center) {
-            HStack(spacing: 10) {
-                Image(systemName: "tray.fill")
-                    .font(.title2)
-                    .foregroundStyle(.red)
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("Inbox")
-                        .font(.largeTitle.bold())
-                    if unreadCount > 0 {
-                        Text(unreadCount > 99 ? "99+" : "\(unreadCount)")
-                            .font(.title3)
+            Menu {
+                Picker("Section", selection: $selectedSection) {
+                    ForEach(AppSection.allCases) { section in
+                        Label(section.rawValue, systemImage: section.icon)
+                            .tag(section)
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: selectedSection.icon)
+                        .font(.title2)
+                        .foregroundStyle(.red)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(selectedSection.rawValue)
+                            .font(.largeTitle.bold())
+                            .foregroundStyle(.primary)
+                        if selectedSection == .email, unreadCount > 0 {
+                            Text(unreadCount > 99 ? "99+" : "\(unreadCount)")
+                                .font(.title3)
+                                .foregroundStyle(.secondary)
+                        }
+                        Image(systemName: "chevron.down")
+                            .font(.footnote.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
                 }
             }
+            .accessibilityLabel("Switch section, currently \(selectedSection.rawValue)")
 
             Spacer()
 

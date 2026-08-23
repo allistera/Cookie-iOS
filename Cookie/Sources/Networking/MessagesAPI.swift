@@ -1,5 +1,20 @@
 import Foundation
 
+/// The full body of a single message, from `GET /messages?id=<uuid>`. The
+/// endpoint returns more fields (thread, attachments, unsubscribe, summary);
+/// decoding ignores everything not declared here.
+struct MessageBody: Decodable {
+    /// Raw, sender-controlled HTML. Render only inside `EmailBodyWebView`'s
+    /// locked-down WKWebView — never in a native text view.
+    let bodyHtml: String?
+    let bodyText: String?
+
+    enum CodingKeys: String, CodingKey {
+        case bodyHtml = "body_html"
+        case bodyText = "body_text"
+    }
+}
+
 enum MessagesAPIError: Error {
     case unauthorized
     case server(status: Int)
@@ -29,6 +44,13 @@ struct MessagesAPI {
             case isArchived = "is_archived"
             case isDeleted = "is_deleted"
         }
+
+        /// The flags Cookie-Web sets when an email is marked "Done":
+        /// archived and no longer unread. Star/delete are left untouched so
+        /// the server `COALESCE`s them to their current values.
+        static func done(id: String) -> PatchMessageBody {
+            PatchMessageBody(id: id, isUnread: false, isArchived: true)
+        }
     }
 
     /// Updates one or more flags on a message the caller owns.
@@ -52,9 +74,40 @@ struct MessagesAPI {
     /// Marks a message "Done" — archives it and clears its unread flag,
     /// mirroring Cookie-Web's `archiveEmail` (`{ is_archived: true, is_unread: false }`).
     static func markDone(id: String, accessToken: String) async throws {
-        try await updateMessage(
-            PatchMessageBody(id: id, isUnread: false, isArchived: true),
-            accessToken: accessToken
-        )
+        try await updateMessage(.done(id: id), accessToken: accessToken)
+    }
+
+    /// Fetches one message's full body — the same `GET /messages?id=` call
+    /// Cookie-Web's `fetchMessageBodyUncached` makes when its reader opens.
+    /// The inbox list deliberately omits `body_html`, so this is the only
+    /// source of the complete message text.
+    static func fetchMessageBody(id: String, accessToken: String) async throws -> MessageBody {
+        guard
+            var components = URLComponents(
+                url: baseURL.appendingPathComponent("messages"),
+                resolvingAgainstBaseURL: false
+            )
+        else {
+            throw MessagesAPIError.invalidResponse
+        }
+        components.queryItems = [URLQueryItem(name: "id", value: id)]
+        guard let url = components.url else {
+            throw MessagesAPIError.invalidResponse
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw MessagesAPIError.invalidResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            if http.statusCode == 401 { throw MessagesAPIError.unauthorized }
+            throw MessagesAPIError.server(status: http.statusCode)
+        }
+
+        return try JSONDecoder().decode(MessageBody.self, from: data)
     }
 }

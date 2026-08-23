@@ -134,9 +134,9 @@ extension DummyEmail {
         return alreadyReply ? trimmed : "Re: \(trimmed)"
     }
 
-    /// A quoted-reply starter body. Cookie-iOS doesn't fetch the full
-    /// message body yet (`EmailDetailView` shows only the list snippet), so
-    /// this quotes that snippet rather than the complete original text.
+    /// A quoted-reply starter body. Quotes the list snippet rather than the
+    /// complete original text — the composer is built from the row model,
+    /// before the detail screen's full-body fetch has necessarily run.
     static func quotedReplyBody(for email: DummyEmail) -> String {
         "\n\nOn \(email.time), \(email.sender) wrote:\n> \(email.preview)"
     }

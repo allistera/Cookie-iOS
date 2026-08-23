@@ -1,12 +1,29 @@
 import SwiftUI
 
-struct ComposeDraft: Equatable {
+/// The composer's draft. `body` is attributed so the WYSIWYG editor can hold
+/// bold/italic/underline/bullet formatting; it's exported to HTML on send.
+struct ComposeDraft {
     var recipient = ""
     var subject = ""
-    var body = ""
+    var body = NSAttributedString()
 
+    /// Mirrors Cookie-Web's `recipientsValid`: at least one comma-separated
+    /// recipient, every one containing an `@`.
     var canSend: Bool {
-        !recipient.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ContactSuggest.recipientsValid(recipient)
+    }
+
+    /// Whether the body carries any actual content.
+    var hasBody: Bool {
+        !body.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+extension ComposeDraft: Equatable {
+    static func == (lhs: ComposeDraft, rhs: ComposeDraft) -> Bool {
+        lhs.recipient == rhs.recipient
+            && lhs.subject == rhs.subject
+            && lhs.body == rhs.body
     }
 }
 
@@ -28,6 +45,9 @@ struct ComposeView: View {
     @State private var draft: ComposeDraft
     @State private var isSending = false
     @State private var sendErrorMessage: String?
+    @State private var contacts: [Contact] = []
+    @State private var contactsLoaded = false
+    @State private var richText = RichTextController()
     @FocusState private var focusedField: Field?
 
     /// Fires after a message is sent successfully, just before the composer
@@ -50,7 +70,7 @@ struct ComposeView: View {
             initialValue: ComposeDraft(
                 recipient: email.address,
                 subject: DummyEmail.replySubject(for: email.subject),
-                body: DummyEmail.quotedReplyBody(for: email)
+                body: NSAttributedString(string: DummyEmail.quotedReplyBody(for: email))
             )
         )
     }
@@ -73,6 +93,39 @@ struct ComposeView: View {
         .onAppear {
             focusedField = .recipient
         }
+        .task {
+            await loadContacts()
+        }
+    }
+
+    /// Loads the user's contacts once for auto-suggest, mirroring Cookie-Web's
+    /// `loadContacts` (`GET /messages/contacts`, fetched a single time per
+    /// composer session). Best-effort: on failure the To field still works,
+    /// just without suggestions.
+    private func loadContacts() async {
+        guard !contactsLoaded else { return }
+        do {
+            let accessToken = try await auth.validAccessToken()
+            contacts = try await ContactsAPI.fetchContacts(accessToken: accessToken)
+            contactsLoaded = true
+        } catch {
+            // Suggestions are optional; typing an address still works.
+        }
+    }
+
+    /// The suggestions shown under the To field while it has focus — the
+    /// current token matched against contacts the user hasn't already
+    /// committed before the last comma.
+    private var contactSuggestions: [Contact] {
+        guard focusedField == .recipient else { return [] }
+        let completed = Set(
+            ContactSuggest.completedRecipients(draft.recipient).map { $0.lowercased() }
+        )
+        let pool = contacts.filter { !completed.contains($0.address.lowercased()) }
+        return ContactSuggest.filterContacts(
+            pool,
+            query: ContactSuggest.currentRecipientToken(draft.recipient)
+        )
     }
 
     private var topBar: some View {
@@ -108,17 +161,20 @@ struct ComposeView: View {
     }
 
     private func send() async {
-        guard draft.canSend, !isSending else { return }
+        guard draft.canSend, draft.hasBody, !isSending else { return }
         isSending = true
         sendErrorMessage = nil
 
         do {
             let accessToken = try await auth.validAccessToken()
+            // HTML export goes through WebKit internally — main actor only.
+            let bodyHtml = try RichText.html(from: draft.body)
             try await SendAPI.sendMail(
                 SendAPI.SendMailBody(
                     to: draft.recipient.trimmingCharacters(in: .whitespacesAndNewlines),
                     subject: draft.subject,
-                    text: draft.body,
+                    text: draft.body.string,
+                    html: bodyHtml,
                     replyToMessageId: replyToMessageId
                 ),
                 accessToken: accessToken
@@ -142,31 +198,11 @@ struct ComposeView: View {
 
     private var addressFields: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text("To")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 76, alignment: .leading)
+            recipientField
 
-                TextField("Add an email", text: $draft.recipient)
-                    .font(.headline)
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.emailAddress)
-                    .focused($focusedField, equals: .recipient)
-                    .submitLabel(.next)
-                    .onSubmit {
-                        focusedField = .subject
-                    }
-
-                Button {} label: {
-                    Image(systemName: "ellipsis")
-                        .font(.headline)
-                        .foregroundStyle(.secondary)
-                }
-                .accessibilityLabel("More recipient options")
+            if !contactSuggestions.isEmpty {
+                contactSuggestionList
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
 
             TextField("Subject", text: $draft.subject)
                 .font(.headline)
@@ -180,13 +216,119 @@ struct ComposeView: View {
         }
     }
 
+    private var recipientField: some View {
+        HStack(spacing: 12) {
+            Text("To")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+                .frame(width: 76, alignment: .leading)
+
+            TextField("Add an email", text: $draft.recipient)
+                .font(.headline)
+                .textInputAutocapitalization(.never)
+                .keyboardType(.emailAddress)
+                .focused($focusedField, equals: .recipient)
+                .submitLabel(.next)
+                .onSubmit {
+                    focusedField = .subject
+                }
+
+            Button {} label: {
+                Image(systemName: "ellipsis")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityLabel("More recipient options")
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+    }
+
+    /// The auto-suggest dropdown, mirroring Cookie-Web's
+    /// `composer-suggestions` rows: person icon, display name, address.
+    private var contactSuggestionList: some View {
+        VStack(spacing: 0) {
+            ForEach(contactSuggestions) { contact in
+                Button {
+                    draft.recipient = ContactSuggest.appendRecipient(draft.recipient, contact.address)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "person.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(.purple)
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            if let name = contact.name, !name.isEmpty {
+                                Text(name)
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                            }
+                            Text(contact.address)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Add \(contact.name ?? contact.address), \(contact.address)")
+
+                Divider()
+                    .padding(.leading, 40)
+            }
+        }
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color(.systemGray4))
+        )
+        .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
+        .padding(.horizontal, 20)
+        .padding(.top, 2)
+    }
+
     private var messageEditor: some View {
-        TextEditor(text: $draft.body)
-            .font(.body)
-            .focused($focusedField, equals: .body)
-            .scrollContentBackground(.hidden)
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
+        RichTextEditor(text: $draft.body, controller: richText)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    if focusedField == .body {
+                        formatButton("bold", systemImage: "bold", style: .bold)
+                        formatButton("italic", systemImage: "italic", style: .italic)
+                        formatButton("underline", systemImage: "underline", style: .underline)
+                        formatButton("bullets", systemImage: "list.bullet", style: .bulletList)
+                    }
+                    Spacer()
+                }
+            }
+    }
+
+    /// One WYSIWYG toggle in the keyboard's format bar, highlighted while the
+    /// style is active at the selection.
+    private func formatButton(
+        _ label: String,
+        systemImage: String,
+        style: RichTextStyle
+    ) -> some View {
+        let isActive = richText.activeStyles.contains(style)
+        return Button {
+            richText.toggle(style)
+        } label: {
+            Image(systemName: systemImage)
+                .font(.body.weight(isActive ? .bold : .regular))
+                .foregroundStyle(isActive ? Color.accentColor : .primary)
+                .frame(width: 36, height: 32)
+                .background(
+                    isActive ? Color.accentColor.opacity(0.15) : .clear,
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
+        }
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(isActive ? [.isSelected] : [])
     }
 
     private func circularButton(

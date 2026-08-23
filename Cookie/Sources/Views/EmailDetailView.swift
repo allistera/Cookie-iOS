@@ -20,9 +20,29 @@ enum EmailDetailNavigation {
 
 struct EmailDetailView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(AuthenticationManager.self) private var auth
     let email: DummyEmail
 
+    /// The full message body, fetched from `GET /messages?id=` when the
+    /// detail screen opens — the inbox list only carries the snippet.
+    private enum BodyState {
+        case loading
+        case loaded(MessageBody)
+        case unavailable
+    }
+
+    @State private var bodyState: BodyState = .loading
+    /// Remote images are shown by default; the "Show images" control only
+    /// appears if this is turned off.
+    @State private var showRemoteImages = true
+    @State private var renderedBodyHeight: CGFloat = 44
     @State private var showReplyComposer = false
+
+    /// Called when "Done" is tapped, before the screen dismisses. The inbox
+    /// owns the optimistic removal and the `PATCH /messages` call (and its
+    /// rollback), so tapping Done here behaves exactly like the list's
+    /// swipe-to-done action.
+    var onDone: () -> Void = {}
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -50,8 +70,26 @@ struct EmailDetailView: View {
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
         .simultaneousGesture(backSwipeGesture)
+        .task(id: email.id) {
+            await loadBody()
+        }
         .fullScreenCover(isPresented: $showReplyComposer) {
             ComposeView(replyingTo: email)
+        }
+    }
+
+    private func loadBody() async {
+        guard case .loading = bodyState else { return }
+        do {
+            let accessToken = try await auth.validAccessToken()
+            let body = try await MessagesAPI.fetchMessageBody(
+                id: email.id.uuidString.lowercased(),
+                accessToken: accessToken
+            )
+            bodyState = .loaded(body)
+        } catch {
+            // Fall back to the list snippet rather than an error screen.
+            bodyState = .unavailable
         }
     }
 
@@ -161,29 +199,7 @@ struct EmailDetailView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("Hello, you have a new update:")
-                    .font(.subheadline)
-
-                Text(email.preview)
-                    .font(.subheadline.weight(.medium))
-
-                Button {} label: {
-                    Text("View Details")
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 6))
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("DETAILS")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-                    Text(email.preview)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
+                messageBody
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 16)
@@ -194,6 +210,60 @@ struct EmailDetailView: View {
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(Color(.systemGray5))
         )
+    }
+
+    @ViewBuilder
+    private var messageBody: some View {
+        switch bodyState {
+        case .loading:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading message…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+        case .unavailable:
+            Text(email.preview)
+                .font(.subheadline)
+
+        case .loaded(let body):
+            if let html = body.bodyHtml, !html.isEmpty {
+                htmlBody(html)
+            } else if let text = body.bodyText, !text.isEmpty {
+                Text(text)
+                    .font(.subheadline)
+            } else {
+                Text(email.preview)
+                    .font(.subheadline)
+            }
+        }
+    }
+
+    private func htmlBody(_ html: String) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !showRemoteImages && EmailBodyWebView.hasBlockedRemoteImages(html) {
+                Button {
+                    showRemoteImages = true
+                } label: {
+                    Label("Show images", systemImage: "photo")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color(.systemGray6), in: Capsule())
+                }
+                .accessibilityLabel("Show remote images")
+            }
+
+            EmailBodyWebView(
+                html: html,
+                blocksRemoteImages: !showRemoteImages,
+                contentHeight: $renderedBodyHeight
+            )
+            .frame(height: max(renderedBodyHeight, 44))
+        }
     }
 
     private var bottomToolbar: some View {
@@ -212,12 +282,19 @@ struct EmailDetailView: View {
 
             Spacer()
 
-            Button {} label: {
-                Image(systemName: "archivebox")
+            Button {
+                onDone()
+                dismiss()
+            } label: {
+                Label("Done", systemImage: "checkmark")
+                    .font(.subheadline.weight(.semibold))
+                    .labelStyle(.titleAndIcon)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color.green.opacity(0.15), in: Capsule())
+                    .foregroundStyle(.green)
             }
-            Button {} label: {
-                Image(systemName: "trash")
-            }
+            .accessibilityLabel("Mark as done")
         }
         .font(.title3)
         .foregroundStyle(.primary)
