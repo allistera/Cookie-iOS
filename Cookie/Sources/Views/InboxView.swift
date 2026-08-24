@@ -37,8 +37,23 @@ struct InboxView: View {
     @State private var isLoadingInitialPage = true
     @State private var loadErrorMessage: String?
     @State private var toastMessage: String?
+    @State private var searchText = ""
+    /// Non-empty while search results replace the inbox list — the same
+    /// signal the web store's `activeSearchQuery` carries. Set only after a
+    /// search succeeds, so the type-ahead dedupe compares against the last
+    /// query whose results are actually on screen.
+    @State private var activeSearchQuery = ""
+    @State private var searchResults: [DummyEmail] = []
+    @State private var isSearching = false
+    /// The web store's `listSeq` guard: whichever search started last wins,
+    /// regardless of response order.
+    @State private var searchSeq = 0
+    @State private var searchTask: Task<Void, Never>?
 
-    private var filteredEmails: [DummyEmail] {
+    private var displayedEmails: [DummyEmail] {
+        // Search results are relevance-ranked server-side and bypass the
+        // category filter, matching the web's flat "Results" group.
+        if !activeSearchQuery.isEmpty { return searchResults }
         guard let selectedFilter else { return emails }
         return emails.filter { $0.filter == selectedFilter }
     }
@@ -57,7 +72,88 @@ struct InboxView: View {
     }
 
     private func refreshEmails() async {
-        await loadEmails()
+        if activeSearchQuery.isEmpty {
+            await loadEmails()
+        } else {
+            // Pull-to-refresh re-runs the active search at full (semantic)
+            // strength rather than clobbering the results with the inbox.
+            await runSearch(activeSearchQuery, semantic: true)
+        }
+    }
+
+    // MARK: Search
+
+    /// Mirrors the web header's input watcher: cancel any pending request,
+    /// ignore sub-2-character queries (restoring the inbox if results were
+    /// showing), and otherwise run the cheap keyword-only search after the
+    /// same 400 ms pause. Semantic search is reserved for an explicit submit.
+    private func searchTextChanged() {
+        // The server rejects queries over 500 chars.
+        searchText = String(searchText.prefix(500))
+        searchTask?.cancel()
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if query.count < 2 {
+            if !activeSearchQuery.isEmpty { exitSearchMode() }
+            return
+        }
+        searchTask = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            await runSearch(query, semantic: false)
+        }
+    }
+
+    /// Return on the web runs the full hybrid search immediately, even for
+    /// text the type-ahead already searched in keyword mode.
+    private func submitSearch() {
+        searchTask?.cancel()
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        searchTask = Task { await runSearch(query, semantic: true) }
+    }
+
+    private func runSearch(_ query: String, semantic: Bool) async {
+        // The debounced path skips a query whose results are already showing;
+        // a submit re-runs it semantically (the web's `force` flag).
+        if !semantic, query == activeSearchQuery { return }
+        searchSeq += 1
+        let seq = searchSeq
+        isSearching = true
+        do {
+            let accessToken = try await auth.validAccessToken()
+            let rows = try await SearchAPI.searchEmails(
+                query: query,
+                semantic: semantic,
+                accessToken: accessToken
+            )
+            guard seq == searchSeq else { return }
+            activeSearchQuery = query
+            searchResults = rows.compactMap(DummyEmail.init(message:))
+        } catch {
+            guard seq == searchSeq else { return }
+            // A superseded request's cancellation is not a failure.
+            if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
+                showToast("Search failed. Please try again.")
+            }
+        }
+        if seq == searchSeq { isSearching = false }
+    }
+
+    /// The store-level clear (web `clearSearch()`): drop the results and any
+    /// in-flight request but keep whatever is typed.
+    private func exitSearchMode() {
+        searchTask?.cancel()
+        searchTask = nil
+        searchSeq += 1
+        activeSearchQuery = ""
+        searchResults = []
+        isSearching = false
+    }
+
+    /// The clear (×) button (web `leaveSearchResults()`): also empties the field.
+    private func clearSearch() {
+        searchText = ""
+        exitSearchMode()
     }
 
     /// Shows a transient confirmation, mirroring Cookie-Web's toast
@@ -71,9 +167,13 @@ struct InboxView: View {
     }
 
     private func markDone(_ email: DummyEmail) {
+        // A row can be in the inbox page, the search results, or both — a
+        // search can surface mail beyond the loaded inbox page.
         let originalIndex = emails.firstIndex(where: { $0.id == email.id })
+        let originalSearchIndex = searchResults.firstIndex(where: { $0.id == email.id })
         withAnimation {
             emails = InboxEmailActions.markingDone(emailID: email.id, in: emails)
+            searchResults = InboxEmailActions.markingDone(emailID: email.id, in: searchResults)
         }
 
         Task {
@@ -88,9 +188,12 @@ struct InboxView: View {
                 // was, mirroring Cookie-Web's `archiveEmail` undo-on-failure
                 // behavior, rather than clobbering the whole list.
                 withAnimation {
-                    if !emails.contains(where: { $0.id == email.id }) {
-                        let insertIndex = min(originalIndex ?? emails.count, emails.count)
-                        emails.insert(email, at: insertIndex)
+                    if let originalIndex, !emails.contains(where: { $0.id == email.id }) {
+                        emails.insert(email, at: min(originalIndex, emails.count))
+                    }
+                    if let originalSearchIndex,
+                       !searchResults.contains(where: { $0.id == email.id }) {
+                        searchResults.insert(email, at: min(originalSearchIndex, searchResults.count))
                     }
                 }
                 loadErrorMessage = "Couldn't mark that email as done. Try again."
@@ -126,6 +229,16 @@ struct InboxView: View {
 
                         if let loadErrorMessage, emails.isEmpty {
                             Text(loadErrorMessage)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 24)
+                                .listRowInsets(EdgeInsets())
+                                .listRowSeparator(.hidden)
+                        }
+
+                        if !activeSearchQuery.isEmpty, searchResults.isEmpty, !isSearching {
+                            Text("No emails matched your search.")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 16)
@@ -171,6 +284,15 @@ struct InboxView: View {
             }
             .task {
                 await loadEmails()
+            }
+            // Leaving the email section or picking a category filter leaves
+            // search mode too — on the web both are route changes, and every
+            // route change funnels through `leaveSearchResults()`.
+            .onChange(of: selectedSection) {
+                if selectedSection != .email { clearSearch() }
+            }
+            .onChange(of: selectedFilter) {
+                if !activeSearchQuery.isEmpty { clearSearch() }
             }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: DummyEmail.self) { email in
@@ -244,7 +366,7 @@ struct InboxView: View {
     }
 
     private var emailList: some View {
-        ForEach(filteredEmails) { email in
+        ForEach(displayedEmails) { email in
             NavigationLink(value: email) {
                 EmailRow(email: email)
             }
@@ -288,9 +410,36 @@ struct InboxView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                Text("Search emails...")
-                    .foregroundStyle(.secondary)
-                Spacer()
+                    .accessibilityHidden(true)
+
+                TextField("Search emails...", text: $searchText)
+                    .foregroundStyle(.primary)
+                    .submitLabel(.search)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .onSubmit {
+                        submitSearch()
+                    }
+                    .onChange(of: searchText) {
+                        searchTextChanged()
+                    }
+
+                if isSearching {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                // Independent of the spinner so a slow search can still be
+                // abandoned, like the web bar's always-present close icon.
+                if !searchText.isEmpty {
+                    Button {
+                        clearSearch()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityLabel("Clear search")
+                }
             }
             .font(.subheadline)
             .padding(.horizontal, 16)
