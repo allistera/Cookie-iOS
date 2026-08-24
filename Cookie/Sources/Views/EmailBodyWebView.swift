@@ -42,26 +42,25 @@ struct EmailBodyWebView: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
 
         context.coordinator.observeContentHeight(of: webView)
-        Task { @MainActor in
-            await context.coordinator.load(
-                html: html,
-                blocksRemoteImages: blocksRemoteImages,
-                into: webView
-            )
-        }
+        // SwiftUI always calls updateUIView right after makeUIView; that
+        // call performs the initial load. Loading here as well would queue
+        // two navigations for the same HTML.
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.contentHeight = $contentHeight
         if context.coordinator.needsReload(html: html, blocksRemoteImages: blocksRemoteImages) {
-            Task { @MainActor in
-                await context.coordinator.load(
-                    html: html,
-                    blocksRemoteImages: blocksRemoteImages,
-                    into: webView
-                )
-            }
+            context.coordinator.load(
+                html: html,
+                blocksRemoteImages: blocksRemoteImages,
+                into: webView
+            )
+        } else {
+            // SwiftUI gives the representable its final width after
+            // makeUIView. Re-measure on the next run loop so WebKit can
+            // reflow long lines and tables for that width.
+            context.coordinator.measureContentHeightAfterLayout(of: webView)
         }
     }
 
@@ -87,10 +86,15 @@ struct EmailBodyWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate {
         var contentHeight: Binding<CGFloat>
 
+        /// Sender CSS controls the webview's contentSize, so the reported
+        /// height is untrusted. Cap the SwiftUI frame; taller bodies scroll
+        /// inside the webview instead of growing native layout without bound.
+        private static let maxContentHeight: CGFloat = 12_000
+
         private(set) var loadedHtml: String?
         private(set) var loadedBlocksRemoteImages: Bool?
-        private var hasAllowedInitialNavigation = false
         private var observation: NSKeyValueObservation?
+        private weak var observedWebView: WKWebView?
 
         init(contentHeight: Binding<CGFloat>) {
             self.contentHeight = contentHeight
@@ -117,6 +121,7 @@ struct EmailBodyWebView: UIViewRepresentable {
 
         func observeContentHeight(of webView: WKWebView) {
             guard observation == nil else { return }
+            observedWebView = webView
             observation = webView.scrollView.observe(
                 \.contentSize,
                 options: [.initial, .new]
@@ -129,26 +134,45 @@ struct EmailBodyWebView: UIViewRepresentable {
         }
 
         private func reportContentHeight(_ height: CGFloat) {
-            guard height > 0, abs(height - contentHeight.wrappedValue) > 0.5 else { return }
-            contentHeight.wrappedValue = height
+            guard height.isFinite, height > 0 else { return }
+            let clamped = min(height, Self.maxContentHeight)
+            // Beyond the cap the frame stops growing, so the webview must
+            // scroll its own overflow.
+            observedWebView?.scrollView.isScrollEnabled = height > Self.maxContentHeight
+            guard abs(clamped - contentHeight.wrappedValue) > 0.5 else { return }
+            contentHeight.wrappedValue = clamped
+        }
+
+        func measureContentHeightAfterLayout(of webView: WKWebView) {
+            Task { @MainActor [weak self, weak webView] in
+                await Task.yield()
+                guard let self, let webView else { return }
+                webView.setNeedsLayout()
+                webView.layoutIfNeeded()
+                reportContentHeight(webView.scrollView.contentSize.height)
+            }
         }
 
         func needsReload(html: String, blocksRemoteImages: Bool) -> Bool {
             html != loadedHtml || blocksRemoteImages != loadedBlocksRemoteImages
         }
 
-        func load(html: String, blocksRemoteImages: Bool, into webView: WKWebView) async {
+        func load(html: String, blocksRemoteImages: Bool, into webView: WKWebView) {
+            // Marked synchronously so back-to-back SwiftUI updates can't
+            // queue duplicate loads for the same HTML.
             loadedHtml = html
             loadedBlocksRemoteImages = blocksRemoteImages
-            hasAllowedInitialNavigation = false
 
-            webView.configuration.userContentController.removeAllContentRuleLists()
-            if blocksRemoteImages,
-               let ruleList = await Self.remoteImageBlockRuleList() {
-                webView.configuration.userContentController.add(ruleList)
+            Task { @MainActor [weak webView] in
+                guard let webView else { return }
+                webView.configuration.userContentController.removeAllContentRuleLists()
+                if blocksRemoteImages,
+                   let ruleList = await Self.remoteImageBlockRuleList() {
+                    webView.configuration.userContentController.add(ruleList)
+                }
+
+                webView.loadHTMLString(Self.document(html: html), baseURL: nil)
             }
-
-            webView.loadHTMLString(Self.document(html: html), baseURL: nil)
         }
 
         /// Wraps the raw email HTML in a minimal document with mobile viewport
@@ -173,6 +197,13 @@ struct EmailBodyWebView: UIViewRepresentable {
 
         // MARK: WKNavigationDelegate
 
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation?) {
+            // KVO can see only the initial blank page on some layouts. A
+            // completed-navigation measurement guarantees the rendered HTML
+            // gets a real SwiftUI frame instead of remaining at 44 points.
+            measureContentHeightAfterLayout(of: webView)
+        }
+
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction
@@ -185,12 +216,17 @@ struct EmailBodyWebView: UIViewRepresentable {
                 return .cancel
             }
 
-            // Allow exactly one navigation per loadHTMLString call; every
-            // other automatic navigation (meta refresh, form post, frame
-            // load) is cancelled.
-            if hasAllowedInitialNavigation { return .cancel }
-            hasAllowedInitialNavigation = true
-            return .allow
+            // The only navigation this view starts itself is loadHTMLString
+            // with a nil base URL, which WebKit reports as a main-frame
+            // about:blank load. Allow that; every other automatic navigation
+            // (meta refresh, form post, frame load) is cancelled. Matching on
+            // the URL instead of counting navigations keeps a superseded
+            // load's policy callback from cancelling the real one.
+            if navigationAction.targetFrame?.isMainFrame == true,
+               navigationAction.request.url?.absoluteString == "about:blank" {
+                return .allow
+            }
+            return .cancel
         }
 
         private static func isExternallyOpenable(_ url: URL) -> Bool {

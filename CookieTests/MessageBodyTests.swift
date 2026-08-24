@@ -31,6 +31,14 @@ final class MessageBodyTests: XCTestCase {
         XCTAssertEqual(body.bodyText, "plain only")
     }
 
+    func testWhitespaceOnlyHtmlFallsBackToPlainText() throws {
+        let json = #"{ "body_html": "  \n", "body_text": "Plain-text message" }"#
+        let body = try JSONDecoder().decode(MessageBody.self, from: Data(json.utf8))
+
+        XCTAssertNil(body.renderableHtml)
+        XCTAssertEqual(body.renderableText, "Plain-text message")
+    }
+
     func testRemoteImageDetectionFlagsImgSrc() {
         XCTAssertTrue(
             EmailBodyWebView.hasBlockedRemoteImages(

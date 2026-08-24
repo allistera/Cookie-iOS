@@ -32,9 +32,9 @@ struct EmailDetailView: View {
     }
 
     @State private var bodyState: BodyState = .loading
-    /// Remote images are shown by default; the "Show images" control only
-    /// appears if this is turned off.
-    @State private var showRemoteImages = true
+    /// Remote images are blocked by default so tracking pixels don't fire on
+    /// open; the "Show images" control opts in per message.
+    @State private var showRemoteImages = false
     @State private var renderedBodyHeight: CGFloat = 44
     @State private var showReplyComposer = false
 
@@ -229,9 +229,9 @@ struct EmailDetailView: View {
                 .font(.subheadline)
 
         case .loaded(let body):
-            if let html = body.bodyHtml, !html.isEmpty {
+            if let html = body.renderableHtml {
                 htmlBody(html)
-            } else if let text = body.bodyText, !text.isEmpty {
+            } else if let text = body.renderableText {
                 Text(text)
                     .font(.subheadline)
             } else {

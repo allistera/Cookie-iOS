@@ -35,6 +35,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.cookie.ios
         PRODUCT_NAME: Cookie
+        # Allister Antosik
+        DEVELOPMENT_TEAM: 88SL72L38P
         INFOPLIST_KEY_CFBundleDisplayName: Cookie
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES

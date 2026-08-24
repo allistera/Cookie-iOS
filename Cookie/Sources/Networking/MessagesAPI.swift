@@ -13,6 +13,24 @@ struct MessageBody: Decodable {
         case bodyHtml = "body_html"
         case bodyText = "body_text"
     }
+
+    /// The API can return an empty or whitespace-only HTML field for a
+    /// plain-text message. Treat that as absent so the reader does not swap
+    /// its loading state for an empty web view.
+    var renderableHtml: String? {
+        Self.nonBlank(bodyHtml)
+    }
+
+    var renderableText: String? {
+        Self.nonBlank(bodyText)
+    }
+
+    private static func nonBlank(_ value: String?) -> String? {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return value
+    }
 }
 
 enum MessagesAPIError: Error {
