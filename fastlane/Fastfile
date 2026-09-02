@@ -1,0 +1,126 @@
+# fastlane configuration for building Cookie and shipping it to TestFlight.
+#
+# Local usage:
+#   bundle install
+#   bundle exec fastlane ios certificates          # fetch App Store signing via match
+#   bundle exec fastlane ios build                 # signed Release archive -> build/Cookie.ipa
+#   bundle exec fastlane ios beta                  # build + upload to TestFlight
+#
+# Required environment variables (set as GitHub Actions secrets in CI):
+#   APP_STORE_CONNECT_KEY_ID          App Store Connect API key ID
+#   APP_STORE_CONNECT_ISSUER_ID       App Store Connect API issuer ID
+#   APP_STORE_CONNECT_KEY_CONTENT     Base64-encoded contents of the .p8 key file
+#   MATCH_GIT_URL                     Git repo that stores match certificates/profiles
+#   MATCH_PASSWORD                    Passphrase used to encrypt the match repo
+#   MATCH_GIT_BASIC_AUTHORIZATION     base64("user:token") for cloning the match repo (CI only)
+
+default_platform(:ios)
+
+PROJECT_PATH = "Cookie.xcodeproj".freeze
+SCHEME = "Cookie".freeze
+APP_TARGET = "Cookie".freeze
+BUNDLE_ID = CredentialsManager::AppfileConfig.try_fetch_value(:app_identifier)
+TEAM_ID = CredentialsManager::AppfileConfig.try_fetch_value(:team_id)
+
+platform :ios do
+  before_all do
+    # Creates a temporary keychain and marks the run as CI so match can import
+    # certificates without prompting. No-op outside of CI.
+    setup_ci if ENV["CI"]
+  end
+
+  desc "Generate Cookie.xcodeproj from project.yml with XcodeGen"
+  lane :generate do
+    Dir.chdir("..") do
+      sh("xcodegen", "generate")
+    end
+  end
+
+  desc "Sync App Store signing certificates and provisioning profiles via match"
+  lane :certificates do |options|
+    match(
+      type: "appstore",
+      app_identifier: BUNDLE_ID,
+      team_id: TEAM_ID,
+      git_url: ENV.fetch("MATCH_GIT_URL"),
+      git_basic_authorization: ENV["MATCH_GIT_BASIC_AUTHORIZATION"],
+      api_key: app_store_api_key,
+      readonly: options.fetch(:readonly, true)
+    )
+  end
+
+  desc "Build a signed Release archive of Cookie for App Store distribution"
+  desc "Options: build_number (defaults to latest TestFlight build + 1)"
+  lane :build do |options|
+    generate
+    certificates
+
+    profile_name = lane_context[SharedValues::MATCH_PROVISIONING_PROFILE_MAPPING][BUNDLE_ID]
+    update_code_signing_settings(
+      path: PROJECT_PATH,
+      targets: [APP_TARGET],
+      build_configurations: ["Release"],
+      use_automatic_signing: false,
+      team_id: TEAM_ID,
+      code_sign_identity: "Apple Distribution",
+      profile_name: profile_name
+    )
+
+    build_number = options[:build_number] || next_build_number
+
+    build_app(
+      project: PROJECT_PATH,
+      scheme: SCHEME,
+      configuration: "Release",
+      clean: true,
+      export_method: "app-store",
+      output_directory: "build",
+      output_name: "Cookie.ipa",
+      xcargs: "CURRENT_PROJECT_VERSION=#{build_number}",
+      export_options: {
+        provisioningProfiles: { BUNDLE_ID => profile_name }
+      }
+    )
+  end
+
+  desc "Build Cookie and upload it to TestFlight"
+  desc "Options: build_number (defaults to latest TestFlight build + 1)"
+  lane :beta do |options|
+    build(options)
+
+    upload_to_testflight(
+      api_key: app_store_api_key,
+      app_identifier: BUNDLE_ID,
+      ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
+      skip_waiting_for_build_processing: true,
+      distribute_external: false
+    )
+  end
+
+  private_lane :app_store_api_key do
+    lane_context[SharedValues::APP_STORE_CONNECT_API_KEY] || app_store_connect_api_key(
+      key_id: ENV.fetch("APP_STORE_CONNECT_KEY_ID"),
+      issuer_id: ENV.fetch("APP_STORE_CONNECT_ISSUER_ID"),
+      key_content: ENV.fetch("APP_STORE_CONNECT_KEY_CONTENT"),
+      is_key_content_base64: true,
+      in_house: false
+    )
+  end
+
+  private_lane :next_build_number do
+    latest = latest_testflight_build_number(
+      api_key: app_store_api_key,
+      app_identifier: BUNDLE_ID,
+      initial_build_number: 0
+    )
+    latest + 1
+  end
+
+  after_all do |lane|
+    UI.success("Finished lane '#{lane}'")
+  end
+
+  error do |lane, exception|
+    UI.error("Lane '#{lane}' failed: #{exception.message}")
+  end
+end

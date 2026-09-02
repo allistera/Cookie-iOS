@@ -1,0 +1,3 @@
+# Shared fastlane settings for the Cookie iOS app.
+app_identifier("com.cookie.ios")
+team_id("88SL72L38P")
