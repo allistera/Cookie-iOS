@@ -110,12 +110,10 @@ enum DocumentsAPIError: Error {
 /// sidebar tree. Folders come back ordered by title, documents by most
 /// recently updated; both arrive flat and are nested client-side.
 struct DocumentsAPI {
-    static let baseURL = URL(string: "https://tasks-api.infinitywave.online")!
-
     /// - Parameter accessToken: A valid Auth0 access token for the
     ///   `cookie-web` API audience.
     static func fetchWorkspace(accessToken: String) async throws -> DocumentWorkspace {
-        var request = URLRequest(url: baseURL.appendingPathComponent("documents"))
+        var request = URLRequest(url: CookieAPIEndpoints.documents)
         request.httpMethod = "GET"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 
@@ -135,7 +133,7 @@ struct DocumentsAPI {
     static func fetchDocument(id: String, accessToken: String) async throws -> DocumentDetail {
         guard
             var components = URLComponents(
-                url: baseURL.appendingPathComponent("documents"),
+                url: CookieAPIEndpoints.documents,
                 resolvingAgainstBaseURL: false
             )
         else {
@@ -169,7 +167,7 @@ struct DocumentsAPI {
         _ body: SaveDocumentBody,
         accessToken: String
     ) async throws -> DocumentSummary {
-        var request = URLRequest(url: baseURL.appendingPathComponent("documents"))
+        var request = URLRequest(url: CookieAPIEndpoints.documents)
         request.httpMethod = "PATCH"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

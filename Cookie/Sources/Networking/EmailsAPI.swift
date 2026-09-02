@@ -7,8 +7,8 @@ struct EmailLabel: Decodable, Hashable {
     let kind: String?
 }
 
-/// A message row from `GET /api/emails`, matching the shape Cookie-Web's
-/// `api/emails.js` (`fetchEmails`/`mapEmailRow`) already produces for the web app.
+/// A message row from `GET /emails`, matching the shape the Cookie-Web inbox
+/// consumes from `cookie-web-emails`.
 struct EmailMessage: Decodable, Identifiable {
     let id: String
     let fromName: String?
@@ -41,7 +41,7 @@ struct EmailMessage: Decodable, Identifiable {
     }
 }
 
-/// The response body of `GET /api/emails`.
+/// The response body of `GET /emails`.
 struct EmailListResponse: Decodable {
     let emails: [EmailMessage]
     let nextCursor: String?
@@ -56,15 +56,9 @@ enum EmailsAPIError: Error {
     case invalidResponse
 }
 
-/// Talks to Cookie-Web's mailbox API — the same Vercel-hosted `/api/emails`
-/// endpoint the web app's Pinia `inbox` store calls (see `stores/inbox.js`).
-/// The per-message read/label/flag endpoints already moved to the
-/// `cookie-web-messages` Cloudflare Worker at `messages-api.infinitywave.online`,
-/// but folder listing has not, so this still targets the Vercel deployment
-/// directly, matching `Cookie-Web/vercel.json`'s production host.
+/// Talks to the `cookie-web-emails` Cloudflare Worker — the same `/emails`
+/// endpoint the web app's Pinia inbox store calls.
 struct EmailsAPI {
-    static let baseURL = URL(string: "https://mail.infinitywave.online")!
-
     /// - Parameters:
     ///   - folder: One of `inbox`, `sent`, `spam`, `snoozed`, `done`, `starred`, `label`.
     ///   - before: Opaque `"<sentAt>|<id>"` cursor copied from a previous page's `nextCursor`.
@@ -77,7 +71,7 @@ struct EmailsAPI {
     ) async throws -> EmailListResponse {
         guard
             var components = URLComponents(
-                url: baseURL.appendingPathComponent("api/emails"),
+                url: CookieAPIEndpoints.emails,
                 resolvingAgainstBaseURL: false
             )
         else {

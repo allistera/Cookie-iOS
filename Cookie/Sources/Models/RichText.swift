@@ -208,7 +208,7 @@ enum RichText {
 
     // MARK: HTML export
 
-    /// Serializes the composed body to the `html` field `POST /api/send`
+    /// Serializes the composed body to the `html` field of `POST /send`
     /// accepts — the body content only, without WebKit's `<html>/<head>`
     /// boilerplate. Must run on the main actor (the conversion goes through
     /// WebKit internally).

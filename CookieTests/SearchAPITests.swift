@@ -2,10 +2,10 @@ import XCTest
 @testable import Cookie
 
 final class SearchAPITests: XCTestCase {
-    /// A `GET /api/search` row is the `GET /api/emails` shape plus a few
+    /// A `GET /search` row is the `GET /emails` shape plus a few
     /// search-only columns (`recipients`, `scheduled_for`, `spam_score`),
     /// which decoding must tolerate — the endpoint promises "response shape
-    /// matches GET /api/emails" and the app reuses `EmailListResponse`.
+    /// matches GET /emails" and the app reuses `EmailListResponse`.
     func testSearchRowsDecodeIntoEmailMessages() throws {
         let json = Data("""
         {

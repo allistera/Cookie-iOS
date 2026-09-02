@@ -6,15 +6,10 @@ enum SendAPIError: Error {
     case invalidResponse
 }
 
-/// Talks to Cookie-Web's `POST /api/send` on the Vercel deployment — the
-/// same endpoint the web app's Pinia `inbox` store calls from `sendMail`.
-/// Sending stays on Vercel rather than the `cookie-web-messages` Cloudflare
-/// Worker (unlike per-message read/flag updates) because it talks to Resend
-/// and writes the sent copy in the same request.
+/// Talks to the `cookie-web-send` Cloudflare Worker's `POST /send` endpoint.
+/// It delivers through Resend and stores the sent copy in the same request.
 struct SendAPI {
-    static let baseURL = URL(string: "https://mail.infinitywave.online")!
-
-    /// Mirrors the backend's `POST /api/send` body. `replyToMessageId`
+    /// Mirrors the backend's `POST /send` body. `replyToMessageId`
     /// threads the stored sent copy with the message being replied to.
     struct SendMailBody: Encodable {
         let to: String
@@ -26,7 +21,7 @@ struct SendAPI {
 
     @discardableResult
     static func sendMail(_ body: SendMailBody, accessToken: String) async throws -> Void {
-        var request = URLRequest(url: baseURL.appendingPathComponent("api/send"))
+        var request = URLRequest(url: CookieAPIEndpoints.send)
         request.httpMethod = "POST"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

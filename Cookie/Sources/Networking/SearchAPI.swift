@@ -1,12 +1,10 @@
 import Foundation
 
-/// Talks to Cookie-Web's `GET /api/search` on the Vercel deployment — the
+/// Talks to the `cookie-web-search` Cloudflare Worker's `GET /search` — the
 /// same hybrid (keyword + semantic) mailbox search the web app's inbox store
-/// calls from `searchEmails`. Result rows match `GET /api/emails`, so they
+/// calls from `searchEmails`. Result rows match `GET /emails`, so they
 /// decode with the same `EmailMessage` model and response envelope.
 struct SearchAPI {
-    static let baseURL = EmailsAPI.baseURL
-
     /// - Parameters:
     ///   - query: Free text, optionally using the web app's structured
     ///     operators (`tag:`, `sender:`, `in:done`, …). The server rejects
@@ -18,7 +16,7 @@ struct SearchAPI {
     static func searchEmails(query: String, semantic: Bool, accessToken: String) async throws -> [EmailMessage] {
         guard
             var components = URLComponents(
-                url: baseURL.appendingPathComponent("api/search"),
+                url: CookieAPIEndpoints.search,
                 resolvingAgainstBaseURL: false
             )
         else {

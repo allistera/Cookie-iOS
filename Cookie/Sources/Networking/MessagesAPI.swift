@@ -43,8 +43,6 @@ enum MessagesAPIError: Error {
 /// per-message read/flag/archive endpoint the web app's Pinia `inbox` store
 /// calls (see `stores/inbox.js`'s `updateMessage` and `archiveEmail`).
 struct MessagesAPI {
-    static let baseURL = URL(string: "https://messages-api.infinitywave.online")!
-
     /// Mirrors the backend's `PATCH /messages` body. Fields left `nil` are
     /// left unchanged server-side — `patchMessage` `COALESCE`s each flag
     /// against the row's current value, so an absent key is a no-op there.
@@ -73,7 +71,7 @@ struct MessagesAPI {
 
     /// Updates one or more flags on a message the caller owns.
     static func updateMessage(_ body: PatchMessageBody, accessToken: String) async throws {
-        var request = URLRequest(url: baseURL.appendingPathComponent("messages"))
+        var request = URLRequest(url: CookieAPIEndpoints.messages)
         request.httpMethod = "PATCH"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -102,7 +100,7 @@ struct MessagesAPI {
     static func fetchMessageBody(id: String, accessToken: String) async throws -> MessageBody {
         guard
             var components = URLComponents(
-                url: baseURL.appendingPathComponent("messages"),
+                url: CookieAPIEndpoints.messages,
                 resolvingAgainstBaseURL: false
             )
         else {

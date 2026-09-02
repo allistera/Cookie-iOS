@@ -6,8 +6,6 @@ import Foundation
 /// authenticated user's contacts: addresses appearing in their mailbox
 /// (received senders or sent recipients).
 struct ContactsAPI {
-    static let baseURL = MessagesAPI.baseURL
-
     struct ContactsResponse: Decodable {
         let contacts: [Contact]
     }
@@ -15,7 +13,7 @@ struct ContactsAPI {
     /// - Parameter accessToken: A valid Auth0 access token for the
     ///   `cookie-web` API audience.
     static func fetchContacts(accessToken: String) async throws -> [Contact] {
-        var request = URLRequest(url: baseURL.appendingPathComponent("messages/contacts"))
+        var request = URLRequest(url: CookieAPIEndpoints.contacts)
         request.httpMethod = "GET"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 

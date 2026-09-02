@@ -95,7 +95,7 @@ struct DummyEmail: Identifiable, Hashable {
 }
 
 extension DummyEmail {
-    /// Builds the inbox row model from a live `GET /api/emails` row. Returns
+    /// Builds the inbox row model from a live `GET /emails` row. Returns
     /// `nil` only if the backend ever sends a malformed id, which shouldn't
     /// happen since `messages.id` is a Postgres UUID column.
     init?(message: EmailMessage) {

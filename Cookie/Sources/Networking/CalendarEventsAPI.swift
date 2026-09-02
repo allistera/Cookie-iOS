@@ -10,14 +10,12 @@ enum CalendarEventsAPIError: Error {
     case invalidResponse
 }
 
-/// Talks to Cookie-Web's `POST /api/calendar-events` on the Vercel deployment
-/// — the same endpoint the web app's CalendarView uses to create events from
+/// Talks to the `cookie-web-calendar` Cloudflare Worker — the same endpoints
+/// the web app's CalendarView uses to create events from
 /// natural language: one `action: "interpret"` call turns the text into a
 /// draft, and a second plain POST saves that draft as an event.
 struct CalendarEventsAPI {
-    static let baseURL = SendAPI.baseURL
-
-    /// A calendar row from `GET /api/calendar-events?resource=calendars`.
+    /// A calendar row from `GET /calendars`.
     /// A non-nil `subscriptionUrl` marks a subscribed (read-only) calendar,
     /// which the backend refuses to create events in.
     struct CalendarSummary: Decodable {
@@ -85,16 +83,7 @@ struct CalendarEventsAPI {
     /// The user's calendars, needed to pick the default one an AI-created
     /// event files under (the create endpoint requires an owned calendar id).
     static func fetchCalendars(accessToken: String) async throws -> [CalendarSummary] {
-        guard
-            var components = URLComponents(
-                url: baseURL.appendingPathComponent("api/calendar-events"),
-                resolvingAgainstBaseURL: false
-            )
-        else { throw CalendarEventsAPIError.invalidResponse }
-        components.queryItems = [URLQueryItem(name: "resource", value: "calendars")]
-        guard let url = components.url else { throw CalendarEventsAPIError.invalidResponse }
-
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: CookieAPIEndpoints.calendars)
         request.httpMethod = "GET"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 
@@ -106,7 +95,7 @@ struct CalendarEventsAPI {
     /// at 7pm") into an event draft. `timeZone` is the IANA identifier the
     /// server resolves relative dates in.
     static func interpretEvent(text: String, timeZone: String, accessToken: String) async throws -> EventDraft {
-        var request = URLRequest(url: baseURL.appendingPathComponent("api/calendar-events"))
+        var request = URLRequest(url: CookieAPIEndpoints.calendarEvents)
         request.httpMethod = "POST"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -120,7 +109,7 @@ struct CalendarEventsAPI {
     /// what the web client sends so AI-created events render like confirmed
     /// ones rather than suggestions.
     static func createEvent(_ draft: EventDraft, calendar: String, accessToken: String) async throws {
-        var request = URLRequest(url: baseURL.appendingPathComponent("api/calendar-events"))
+        var request = URLRequest(url: CookieAPIEndpoints.calendarEvents)
         request.httpMethod = "POST"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
