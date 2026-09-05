@@ -15,22 +15,15 @@ struct NoteEditorView: View {
     /// `SAVE_DEBOUNCE_MS`.
     private static let saveDebounce = Duration.milliseconds(800)
 
-    enum SaveState: Equatable {
-        case idle
-        case saving
-        case saved
-        case failed(String)
-    }
-
     @State private var title = ""
     @State private var blocks: [DocumentBlock] = []
-    @State private var lastKnownUpdatedAt: String?
     @State private var isLoading = true
     @State private var loadErrorMessage: String?
-    @State private var saveState = SaveState.idle
+    @State private var isSavingCopy = false
+    @State private var saves = NoteSaveCoordinator()
+    @Environment(\.dismiss) private var dismiss
 
     @State private var debounceTask: Task<Void, Never>?
-    @State private var saveInFlight: Task<Void, Never>?
 
     @FocusState private var focusedField: BlockFieldPath?
 
@@ -47,7 +40,7 @@ struct NoteEditorView: View {
             )
             title = detail.title ?? ""
             blocks = detail.blocks
-            lastKnownUpdatedAt = detail.updatedAt ?? document.updatedAt
+            saves.configure(updatedAt: detail.updatedAt ?? document.updatedAt)
             loadErrorMessage = nil
         } catch {
             loadErrorMessage = "Couldn't open this note. Go back and try again."
@@ -58,7 +51,8 @@ struct NoteEditorView: View {
     // MARK: - Saving
 
     private func edited() {
-        saveState = .saving
+        guard !isLoading else { return }
+        saves.edited(id: document.id, title: title, blocks: blocks)
         debounceTask?.cancel()
         debounceTask = Task {
             try? await Task.sleep(for: Self.saveDebounce)
@@ -67,54 +61,46 @@ struct NoteEditorView: View {
         }
     }
 
-    /// Serializes PATCHes: a slow earlier save finishes before a newer edit
-    /// goes out, so the server can't commit them out of order.
-    private func save() async {
-        if let saveInFlight { await saveInFlight.value }
-        let task = Task { await performSave() }
-        saveInFlight = task
-        await task.value
-        if saveInFlight == task { saveInFlight = nil }
-    }
-
-    private func performSave() async {
-        do {
+    @discardableResult
+    private func save() async -> Bool {
+        let auth = auth
+        let onSaved = onSaved
+        return await saves.flush { body in
             let accessToken = try await auth.validAccessToken()
-            let saved = try await DocumentsAPI.saveDocument(
-                .init(
-                    id: document.id,
-                    title: title,
-                    blocks: blocks,
-                    updatedAt: lastKnownUpdatedAt
-                ),
-                accessToken: accessToken
-            )
-            lastKnownUpdatedAt = saved.updatedAt
+            let saved = try await DocumentsAPI.saveDocument(body, accessToken: accessToken)
             onSaved(saved)
-            saveState = .saved
-        } catch DocumentsAPIError.conflict {
-            saveState = .failed("Changed elsewhere — reopen this note")
-        } catch {
-            saveState = .failed("Couldn't save")
+            return saved
         }
     }
 
-    /// Leaving the screen tears this view's state down, so a still-pending
-    /// edit is sent from a task that owns copies of everything it needs.
+    private func leave() {
+        guard !isSavingCopy else { return }
+        debounceTask?.cancel()
+        Task { if await save() { dismiss() } }
+    }
+
+    private func saveCopy() {
+        guard !isSavingCopy else { return }
+        isSavingCopy = true
+        debounceTask?.cancel()
+        Task {
+            defer { isSavingCopy = false }
+            do {
+                await saves.waitUntilIdle()
+                let token = try await auth.validAccessToken()
+                let copy = try await DocumentsAPI.createCopy(title: title, blocks: blocks, accessToken: token)
+                onSaved(copy)
+                saves.savedAsCopy()
+                dismiss()
+            } catch {
+                loadErrorMessage = "Couldn't save the copy. Your edits are still open."
+            }
+        }
+    }
+
     private func flushOnExit() {
         debounceTask?.cancel()
-        guard saveState == .saving else { return }
-        let body = DocumentsAPI.SaveDocumentBody(
-            id: document.id,
-            title: title,
-            blocks: blocks,
-            updatedAt: lastKnownUpdatedAt
-        )
-        let auth = auth
-        Task {
-            guard let accessToken = try? await auth.validAccessToken() else { return }
-            _ = try? await DocumentsAPI.saveDocument(body, accessToken: accessToken)
-        }
+        Task { await save() }
     }
 
     // MARK: - Editing
@@ -151,6 +137,7 @@ struct NoteEditorView: View {
             Section {
                 TextField("Title", text: $title, axis: .vertical)
                     .font(.title2.bold())
+                    .disabled(isLoading || loadErrorMessage != nil)
                     .onChange(of: title) { _, _ in edited() }
                     .listRowSeparator(.hidden)
             }
@@ -182,6 +169,7 @@ struct NoteEditorView: View {
                 .listRowSeparator(.hidden)
             }
         }
+        .disabled(isSavingCopy)
         .listStyle(.plain)
         .overlay {
             if isLoading {
@@ -190,7 +178,11 @@ struct NoteEditorView: View {
         }
         .navigationTitle(title.isEmpty ? "Untitled" : title)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden()
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Notes", systemImage: "chevron.left", action: leave)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 saveStatus
             }
@@ -207,7 +199,7 @@ struct NoteEditorView: View {
 
     @ViewBuilder
     private var saveStatus: some View {
-        switch saveState {
+        switch saves.state {
         case .idle:
             EmptyView()
         case .saving:
@@ -220,9 +212,14 @@ struct NoteEditorView: View {
                 .labelStyle(.titleAndIcon)
                 .foregroundStyle(.secondary)
         case .failed(let message):
-            Text(message)
-                .font(.caption)
-                .foregroundStyle(.red)
+            Menu {
+                Button("Retry") { Task { await save() } }
+                    .disabled(isSavingCopy)
+                Button("Save a copy", action: saveCopy)
+                    .disabled(isSavingCopy)
+            } label: {
+                Text(message).font(.caption).foregroundStyle(.red)
+            }
         }
     }
 

@@ -218,7 +218,10 @@ enum RichText {
             from: NSRange(location: 0, length: text.length),
             documentAttributes: [.documentType: NSAttributedString.DocumentType.html]
         )
-        return bodyContent(of: String(decoding: data, as: UTF8.self))
+        guard let html = String(bytes: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
+        }
+        return bodyContent(of: html)
     }
 
     /// The inner content of an HTML document's `<body>`, falling back to the

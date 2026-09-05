@@ -70,16 +70,16 @@ enum ContactSuggest {
         query: String,
         limit: Int = 6
     ) -> [Contact] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        if q.isEmpty { return [] }
+        let normalizedQuery = query.trimmingCharacters(in: .whitespaces).lowercased()
+        if normalizedQuery.isEmpty { return [] }
 
         var scored: [(contact: Contact, rank: Int)] = []
         for contact in contacts {
             let name = (contact.name ?? "").lowercased()
             let address = contact.address.lowercased()
-            if address == q { continue } // already fully entered
-            guard name.contains(q) || address.contains(q) else { continue }
-            let startsWith = name.hasPrefix(q) || address.hasPrefix(q)
+            if address == normalizedQuery { continue } // already fully entered
+            guard name.contains(normalizedQuery) || address.contains(normalizedQuery) else { continue }
+            let startsWith = name.hasPrefix(normalizedQuery) || address.hasPrefix(normalizedQuery)
             scored.append((contact, startsWith ? 0 : 1))
         }
 

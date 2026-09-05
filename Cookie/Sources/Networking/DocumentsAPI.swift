@@ -95,7 +95,7 @@ struct DocumentDetail: Decodable, Sendable {
     }
 }
 
-enum DocumentsAPIError: Error {
+enum DocumentsAPIError: Error, Equatable {
     case unauthorized
     /// The document changed elsewhere since it was loaded; the save was
     /// rejected rather than clobbering the newer copy.
@@ -175,6 +175,19 @@ struct DocumentsAPI {
 
         let data = try await send(request)
         return try JSONDecoder().decode(DocumentSummaryResponse.self, from: data).document
+    }
+
+    /// A conflict never overwrites the remote document. Save the local draft
+    /// as a separate note when the user explicitly chooses that recovery.
+    static func createCopy(title: String, blocks: [DocumentBlock], accessToken: String) async throws -> DocumentSummary {
+        var request = URLRequest(url: CookieAPIEndpoints.documents)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["kind": "document", "title": title + " (copy)"])
+        let data = try await send(request)
+        let created = try JSONDecoder().decode(DocumentSummaryResponse.self, from: data).document
+        return try await saveDocument(.init(id: created.id, blocks: blocks, updatedAt: created.updatedAt), accessToken: accessToken)
     }
 
     private struct DocumentResponse: Decodable {

@@ -29,13 +29,10 @@ struct InboxView: View {
     let profile: AuthenticationManager.Profile
 
     @State private var showSignOutConfirmation = false
+    @State private var mailbox = InboxMailbox()
     @State private var showComposer = false
     @State private var selectedSection: AppSection = .email
     @State private var selectedFilter: EmailFilter?
-    @State private var emails: [DummyEmail] = []
-    @State private var unreadCount = 0
-    @State private var isLoadingInitialPage = true
-    @State private var loadErrorMessage: String?
     @State private var toastMessage: String?
     @State private var searchText = ""
     /// Non-empty while search results replace the inbox list — the same
@@ -54,21 +51,15 @@ struct InboxView: View {
         // Search results are relevance-ranked server-side and bypass the
         // category filter, matching the web's flat "Results" group.
         if !activeSearchQuery.isEmpty { return searchResults }
-        guard let selectedFilter else { return emails }
-        return emails.filter { $0.filter == selectedFilter }
+        guard let selectedFilter else { return mailbox.emails }
+        return mailbox.emails.filter { $0.filter == selectedFilter }
     }
 
-    private func loadEmails() async {
-        do {
-            let accessToken = try await auth.validAccessToken()
-            let page = try await EmailsAPI.fetchEmails(accessToken: accessToken)
-            emails = page.emails.compactMap(DummyEmail.init(message:))
-            unreadCount = page.unreadCount ?? 0
-            loadErrorMessage = nil
-        } catch {
-            loadErrorMessage = "Couldn't load your inbox. Pull to refresh to try again."
+    private func loadEmails(refresh: Bool = true) async {
+        await mailbox.load(refresh: refresh) { before in
+            let token = try await auth.validAccessToken()
+            return try await EmailsAPI.fetchEmails(before: before, accessToken: token)
         }
-        isLoadingInitialPage = false
     }
 
     private func refreshEmails() async {
@@ -169,10 +160,10 @@ struct InboxView: View {
     private func markDone(_ email: DummyEmail) {
         // A row can be in the inbox page, the search results, or both — a
         // search can surface mail beyond the loaded inbox page.
-        let originalIndex = emails.firstIndex(where: { $0.id == email.id })
+        let originalIndex = mailbox.emails.firstIndex(where: { $0.id == email.id })
         let originalSearchIndex = searchResults.firstIndex(where: { $0.id == email.id })
         withAnimation {
-            emails = InboxEmailActions.markingDone(emailID: email.id, in: emails)
+            mailbox.emails = InboxEmailActions.markingDone(emailID: email.id, in: mailbox.emails)
             searchResults = InboxEmailActions.markingDone(emailID: email.id, in: searchResults)
         }
 
@@ -188,15 +179,15 @@ struct InboxView: View {
                 // was, mirroring Cookie-Web's `archiveEmail` undo-on-failure
                 // behavior, rather than clobbering the whole list.
                 withAnimation {
-                    if let originalIndex, !emails.contains(where: { $0.id == email.id }) {
-                        emails.insert(email, at: min(originalIndex, emails.count))
+                    if let originalIndex, !mailbox.emails.contains(where: { $0.id == email.id }) {
+                        mailbox.emails.insert(email, at: min(originalIndex, mailbox.emails.count))
                     }
                     if let originalSearchIndex,
                        !searchResults.contains(where: { $0.id == email.id }) {
                         searchResults.insert(email, at: min(originalSearchIndex, searchResults.count))
                     }
                 }
-                loadErrorMessage = "Couldn't mark that email as done. Try again."
+                mailbox.errorMessage = "Couldn't mark that email as done. Try again."
             }
         }
     }
@@ -227,8 +218,8 @@ struct InboxView: View {
                             .listRowInsets(EdgeInsets())
                             .listRowSeparator(.hidden)
 
-                        if let loadErrorMessage, emails.isEmpty {
-                            Text(loadErrorMessage)
+                        if let message = mailbox.errorMessage, mailbox.emails.isEmpty {
+                            Text(message)
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 16)
@@ -249,6 +240,18 @@ struct InboxView: View {
 
                         emailList
 
+                        if activeSearchQuery.isEmpty, mailbox.nextCursor != nil {
+                            Button(mailbox.isLoading ? "Loading…" : "Load more emails") {
+                                Task { await loadEmails(refresh: false) }
+                            }
+                            .disabled(mailbox.isLoading)
+                            .task(id: mailbox.nextCursor) {
+                                // This row is reached even when the current category
+                                // filters every loaded message out.
+                                if mailbox.errorMessage == nil { await loadEmails(refresh: false) }
+                            }
+                        }
+
                         Color.clear
                             .frame(height: 90)
                             .listRowInsets(EdgeInsets())
@@ -261,7 +264,7 @@ struct InboxView: View {
                     }
                 }
 
-                if selectedSection == .email, isLoadingInitialPage, emails.isEmpty {
+                if selectedSection == .email, mailbox.isLoadingInitialPage, mailbox.emails.isEmpty {
                     ProgressView()
                         .controlSize(.large)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -315,54 +318,9 @@ struct InboxView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center) {
-            Menu {
-                Picker("Section", selection: $selectedSection) {
-                    ForEach(AppSection.allCases) { section in
-                        Label(section.rawValue, systemImage: section.icon)
-                            .tag(section)
-                    }
-                }
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: selectedSection.icon)
-                        .font(.title2)
-                        .foregroundStyle(.red)
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(selectedSection.rawValue)
-                            .font(.largeTitle.bold())
-                            .foregroundStyle(.primary)
-                        if selectedSection == .email, unreadCount > 0 {
-                            Text(unreadCount > 99 ? "99+" : "\(unreadCount)")
-                                .font(.title3)
-                                .foregroundStyle(.secondary)
-                        }
-                        Image(systemName: "chevron.down")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .accessibilityLabel("Switch section, currently \(selectedSection.rawValue)")
-
-            Spacer()
-
-            Button {
-                showSignOutConfirmation = true
-            } label: {
-                Circle()
-                    .fill(Color(red: 0.72, green: 0.29, blue: 0.15))
-                    .frame(width: 40, height: 40)
-                    .overlay(
-                        Text(avatarInitial)
-                            .font(.headline)
-                            .foregroundStyle(.white)
-                    )
-            }
+        InboxHeader(selectedSection: $selectedSection, unreadCount: mailbox.unreadCount, avatarInitial: avatarInitial) {
+            showSignOutConfirmation = true
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 20)
-        .padding(.bottom, 12)
     }
 
     private var emailList: some View {
@@ -387,126 +345,12 @@ struct InboxView: View {
     }
 
     private var floatingToolbar: some View {
-        HStack(spacing: 12) {
-            Menu {
-                Picker("Filter", selection: $selectedFilter) {
-                    Text("All emails")
-                        .tag(EmailFilter?.none)
-
-                    ForEach(EmailFilter.allCases) { filter in
-                        Text(filter.rawValue)
-                            .tag(Optional(filter))
-                    }
-                }
-            } label: {
-                Image(systemName: "line.3.horizontal")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                    .frame(width: 48, height: 48)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
-            .accessibilityLabel("Filter emails")
-
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-
-                TextField("Search emails...", text: $searchText)
-                    .foregroundStyle(.primary)
-                    .submitLabel(.search)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .onSubmit {
-                        submitSearch()
-                    }
-                    .onChange(of: searchText) {
-                        searchTextChanged()
-                    }
-
-                if isSearching {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-
-                // Independent of the spinner so a slow search can still be
-                // abandoned, like the web bar's always-present close icon.
-                if !searchText.isEmpty {
-                    Button {
-                        clearSearch()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .accessibilityLabel("Clear search")
-                }
-            }
-            .font(.subheadline)
-            .padding(.horizontal, 16)
-            .frame(height: 48)
-            .background(.ultraThinMaterial, in: Capsule())
-
-            Button {
-                showComposer = true
-            } label: {
-                Image(systemName: "square.and.pencil")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                    .frame(width: 48, height: 48)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
-            .accessibilityLabel("Compose email")
+        InboxToolbar(selectedFilter: $selectedFilter, searchText: $searchText, isSearching: isSearching,
+                     onSubmit: submitSearch, onSearchChange: searchTextChanged, onClear: clearSearch) {
+            showComposer = true
         }
-        .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
     }
-}
 
-private struct EmailRow: View {
-    let email: DummyEmail
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Circle()
-                .fill(email.color)
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Text(email.initial)
-                        .font(.subheadline.bold())
-                        .foregroundStyle(.white)
-                )
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    HStack(spacing: 6) {
-                        Text(email.sender)
-                            .font(.subheadline.bold())
-                        if email.isUnread {
-                            Circle()
-                                .fill(.blue)
-                                .frame(width: 6, height: 6)
-                        }
-                    }
-                    Spacer()
-                    Text(email.time)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Text(email.subject)
-                    .font(.subheadline.bold())
-                    .lineLimit(1)
-
-                Text(email.preview)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-    }
 }
 
 #Preview {

@@ -113,7 +113,6 @@ enum DocumentBody {
                         blockIndex: index,
                         style: block.data?["style"]?.stringValue ?? "unordered",
                         parentPath: [],
-                        depth: 0,
                         into: &rows
                     )
                 }
@@ -144,7 +143,6 @@ enum DocumentBody {
         blockIndex: Int,
         style: String,
         parentPath: [Int],
-        depth: Int,
         into rows: inout [DocumentBodyRow]
     ) {
         for (offset, item) in items.enumerated() {
@@ -153,7 +151,7 @@ enum DocumentBody {
             rows.append(.editable(.init(
                 path: .init(blockIndex: blockIndex, itemPath: path),
                 style: .listItem(
-                    depth: depth,
+                    depth: parentPath.count,
                     marker: marker(style: style, number: offset + 1, item: item)
                 ),
                 text: plainText(fromHTML: content)
@@ -165,7 +163,6 @@ enum DocumentBody {
                     blockIndex: blockIndex,
                     style: style,
                     parentPath: path,
-                    depth: depth + 1,
                     into: &rows
                 )
             }

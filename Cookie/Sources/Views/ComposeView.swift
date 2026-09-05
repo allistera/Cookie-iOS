@@ -42,6 +42,7 @@ struct ComposeView: View {
     /// `nil` for a fresh, non-reply message.
     private let replyToMessageId: String?
 
+    @State private var sendRequestId = UUID().uuidString
     @State private var draft: ComposeDraft
     @State private var isSending = false
     @State private var sendErrorMessage: String?
@@ -175,7 +176,8 @@ struct ComposeView: View {
                     subject: draft.subject,
                     text: draft.body.string,
                     html: bodyHtml,
-                    replyToMessageId: replyToMessageId
+                    replyToMessageId: replyToMessageId,
+                    requestId: sendRequestId
                 ),
                 accessToken: accessToken
             )

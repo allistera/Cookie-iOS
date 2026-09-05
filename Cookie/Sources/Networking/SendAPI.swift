@@ -17,10 +17,11 @@ struct SendAPI {
         let text: String
         var html: String?
         var replyToMessageId: String?
+        var requestId: String = UUID().uuidString
     }
 
     @discardableResult
-    static func sendMail(_ body: SendMailBody, accessToken: String) async throws -> Void {
+    static func sendMail(_ body: SendMailBody, accessToken: String) async throws {
         var request = URLRequest(url: CookieAPIEndpoints.send)
         request.httpMethod = "POST"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
