@@ -7,6 +7,13 @@ struct EmailLabel: Decodable, Hashable {
     let kind: String?
 }
 
+/// The server category can be built-in or a custom per-user category.
+struct EmailCategory: Decodable, Hashable {
+    let id: String
+    let name: String
+    let color: String?
+}
+
 /// A message row from `GET /emails`, matching the shape the Cookie-Web inbox
 /// consumes from `cookie-web-emails`.
 struct EmailMessage: Decodable, Identifiable {
@@ -23,6 +30,7 @@ struct EmailMessage: Decodable, Identifiable {
     let hasAiSummary: Bool
     let hasAttachments: Bool
     let labels: [EmailLabel]
+    var category: EmailCategory?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -38,6 +46,7 @@ struct EmailMessage: Decodable, Identifiable {
         case hasAiSummary = "has_ai_summary"
         case hasAttachments = "has_attachments"
         case labels
+        case category
     }
 }
 

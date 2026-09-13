@@ -14,6 +14,17 @@ final class InboxMailboxTests: XCTestCase {
                                  userId: nil, readReceiptsAvailable: nil)
     }
 
+    func testMappingAcceptsWholeAndFractionalTimestamps() throws {
+        for timestamp in ["2026-09-01T12:00:00Z", "2026-09-01T12:00:00.123456Z"] {
+            let message = EmailMessage(id: UUID().uuidString, fromName: nil, fromAddress: "sender@example.com",
+                                       subject: "Mail", snippet: nil, sentAt: timestamp,
+                                       isUnread: true, isStarred: false, isSent: false, hasHtml: false,
+                                       hasAiSummary: false, hasAttachments: false, labels: [])
+            let email = try XCTUnwrap(DummyEmail(message: message))
+            XCTAssertFalse(email.time.isEmpty)
+        }
+    }
+
     func testLoadsBeyondFiftyMessagesAndDeduplicatesOverlappingPages() async {
         let mailbox = InboxMailbox()
         let ids = (0..<60).map { _ in UUID().uuidString }

@@ -245,11 +245,6 @@ struct InboxView: View {
                                 Task { await loadEmails(refresh: false) }
                             }
                             .disabled(mailbox.isLoading)
-                            .task(id: mailbox.nextCursor) {
-                                // This row is reached even when the current category
-                                // filters every loaded message out.
-                                if mailbox.errorMessage == nil { await loadEmails(refresh: false) }
-                            }
                         }
 
                         Color.clear
@@ -346,6 +341,8 @@ struct InboxView: View {
 
     private var floatingToolbar: some View {
         InboxToolbar(selectedFilter: $selectedFilter, searchText: $searchText, isSearching: isSearching,
+                     filters: Array(Set(mailbox.emails.map(\.filter)).union(selectedFilter.map { [$0] } ?? []))
+                         .sorted { $0.rawValue.localizedCaseInsensitiveCompare($1.rawValue) == .orderedAscending },
                      onSubmit: submitSearch, onSearchChange: searchTextChanged, onClear: clearSearch) {
             showComposer = true
         }
