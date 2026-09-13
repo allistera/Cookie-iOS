@@ -6,6 +6,7 @@ struct DocumentTreeRow: Identifiable, Hashable {
     enum Item: Hashable {
         case folder(DocumentFolder)
         case document(DocumentSummary)
+        case more(String)
     }
 
     let item: Item
@@ -17,6 +18,7 @@ struct DocumentTreeRow: Identifiable, Hashable {
         switch item {
         case .folder(let folder): "folder-\(folder.id)"
         case .document(let document): "document-\(document.id)"
+        case .more(let folderID): "more-\(folderID)"
         }
     }
 }
@@ -31,7 +33,8 @@ enum DocumentTree {
     static func flatten(
         folders: [DocumentFolder],
         documents: [DocumentSummary],
-        expandedFolderIDs: Set<String>
+        expandedFolderIDs: Set<String>,
+        moreFolderIDs: Set<String> = []
     ) -> [DocumentTreeRow] {
         let folderIDs = Set(folders.map(\.id))
 
@@ -79,6 +82,9 @@ enum DocumentTree {
                 for document in documentsByFolder[folder.id] ?? [] {
                     rows.append(.init(item: .document(document), depth: depth + 1, isExpanded: false))
                 }
+                if moreFolderIDs.contains(folder.id) {
+                    rows.append(.init(item: .more(folder.id), depth: depth + 1, isExpanded: false))
+                }
             }
         }
         walk(nil, depth: 0)
@@ -87,6 +93,9 @@ enum DocumentTree {
             rows.append(.init(item: .document(document), depth: 0, isExpanded: false))
         }
 
+        if moreFolderIDs.contains("root") {
+            rows.append(.init(item: .more("root"), depth: 0, isExpanded: false))
+        }
         return rows
     }
 }

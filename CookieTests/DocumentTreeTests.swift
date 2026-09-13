@@ -27,10 +27,22 @@ final class DocumentTreeTests: XCTestCase {
     private func titles(_ rows: [DocumentTreeRow]) -> [String] {
         rows.map { row in
             switch row.item {
+            case .more(let folder): "More \(folder)"
             case .folder(let folder): "\(String(repeating: "  ", count: row.depth))📁 \(folder.title)"
             case .document(let document): "\(String(repeating: "  ", count: row.depth))📄 \(document.displayTitle)"
             }
         }
+    }
+
+    func testPaginationRowsAppearOnlyInExpandedFoldersAndAtRoot() throws {
+        let folders = [try folder("projects")]
+        let closed = DocumentTree.flatten(folders: folders, documents: [],
+                                          expandedFolderIDs: [], moreFolderIDs: ["projects", "root"])
+        XCTAssertEqual(titles(closed), ["📁 projects", "More root"])
+        let opened = DocumentTree.flatten(folders: folders, documents: [try document("plan", folder: "projects")],
+                                          expandedFolderIDs: ["projects"], moreFolderIDs: ["projects", "root"])
+        XCTAssertEqual(titles(opened), ["📁 projects", "  📄 plan", "More projects", "More root"])
+        XCTAssertEqual(Set(opened.map(\.id)).count, opened.count)
     }
 
     func testCollapsedFolderHidesItsContents() throws {

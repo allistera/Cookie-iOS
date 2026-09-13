@@ -10,12 +10,18 @@ struct NotesView: View {
     @State private var expandedFolderIDs: Set<String> = []
     @State private var isLoadingInitialPage = true
     @State private var loadErrorMessage: String?
+    @State private var workspacePaged = false
+    @State private var loadedFolders: Set<String> = []
+    @State private var pageCursors: [String: String] = [:]
+    @State private var loadingFolders: Set<String> = []
+    @State private var generation = 0
 
     private var rows: [DocumentTreeRow] {
         DocumentTree.flatten(
             folders: folders,
             documents: documents,
-            expandedFolderIDs: expandedFolderIDs
+            expandedFolderIDs: expandedFolderIDs,
+            moreFolderIDs: workspacePaged ? Set(pageCursors.keys).union(expandedFolderIDs.subtracting(loadedFolders)) : []
         )
     }
 
@@ -24,16 +30,45 @@ struct NotesView: View {
     }
 
     private func loadWorkspace() async {
+        generation += 1
+        let requestGeneration = generation
         do {
             let accessToken = try await auth.validAccessToken()
             let workspace = try await DocumentsAPI.fetchWorkspace(accessToken: accessToken)
+            guard requestGeneration == generation else { return }
+            workspacePaged = workspace.version != nil
+            loadedFolders = ["root"]
+            pageCursors = [:]
+            pageCursors["root"] = workspace.nextCursor
             folders = workspace.folders
             documents = workspace.documents
             loadErrorMessage = nil
+            for id in expandedFolderIDs { await loadFolder(id) }
         } catch {
             loadErrorMessage = "Couldn't load your notes. Pull to refresh to try again."
         }
         isLoadingInitialPage = false
+    }
+
+    private func loadFolder(_ id: String) async {
+        guard workspacePaged, !loadingFolders.contains(id) else { return }
+        if loadedFolders.contains(id), pageCursors[id] == nil { return }
+        let requestGeneration = generation
+        loadingFolders.insert(id)
+        defer { loadingFolders.remove(id) }
+        do {
+            let token = try await auth.validAccessToken()
+            let page = try await DocumentsAPI.fetchDocumentPage(folderID: id == "root" ? nil : id,
+                                                                before: pageCursors[id], accessToken: token)
+            guard requestGeneration == generation else { return }
+            let incoming = Set(page.documents.map(\.id))
+            documents.removeAll { incoming.contains($0.id) }
+            documents.append(contentsOf: page.documents)
+            pageCursors[id] = page.nextCursor
+            loadedFolders.insert(id)
+        } catch {
+            loadErrorMessage = "Couldn't load more notes. Try again."
+        }
     }
 
     private func toggle(_ folder: DocumentFolder) {
@@ -42,6 +77,7 @@ struct NotesView: View {
                 expandedFolderIDs.remove(folder.id)
             } else {
                 expandedFolderIDs.insert(folder.id)
+                if !loadedFolders.contains(folder.id) { Task { await loadFolder(folder.id) } }
             }
         }
     }
@@ -57,6 +93,12 @@ struct NotesView: View {
 
                 ForEach(rows) { row in
                     switch row.item {
+                    case .more(let folderID):
+                        Button(loadingFolders.contains(folderID) ? "Loading…" : "More documents") {
+                            Task { await loadFolder(folderID) }
+                        }
+                        .disabled(loadingFolders.contains(folderID))
+                        .padding(.leading, CGFloat(row.depth) * 18)
                     case .folder(let folder):
                         Button {
                             toggle(folder)

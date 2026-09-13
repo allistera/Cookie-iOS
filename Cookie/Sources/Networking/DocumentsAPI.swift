@@ -64,6 +64,8 @@ struct DocumentSummary: Decodable, Identifiable, Hashable {
 struct DocumentWorkspace: Decodable {
     let folders: [DocumentFolder]
     let documents: [DocumentSummary]
+    var nextCursor: String?
+    var version: String?
 }
 
 /// A document with its blocks — only ever fetched one at a time, the way
@@ -113,20 +115,42 @@ struct DocumentsAPI {
     /// - Parameter accessToken: A valid Auth0 access token for the
     ///   `cookie-web` API audience.
     static func fetchWorkspace(accessToken: String) async throws -> DocumentWorkspace {
-        var request = URLRequest(url: CookieAPIEndpoints.documents)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let data = try await getWorkspaceData(query: [URLQueryItem(name: "view", value: "meta")], accessToken: accessToken)
+        struct Metadata: Decodable {
+            let folders: [DocumentFolder]
+            let documents: [DocumentSummary]?
+            let version: String?
+        }
+        let metadata = try JSONDecoder().decode(Metadata.self, from: data)
+        if let documents = metadata.documents {
+            return DocumentWorkspace(folders: metadata.folders, documents: documents)
+        }
+        let page = try await fetchDocumentPage(folderID: nil, accessToken: accessToken)
+        return DocumentWorkspace(folders: metadata.folders, documents: page.documents,
+                                 nextCursor: page.nextCursor, version: metadata.version)
+    }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
+    struct DocumentPage: Decodable {
+        let documents: [DocumentSummary]
+        let nextCursor: String?
+    }
+
+    static func fetchDocumentPage(folderID: String?, before: String? = nil, accessToken: String) async throws -> DocumentPage {
+        var query = [URLQueryItem(name: "view", value: "page"), URLQueryItem(name: "folder", value: folderID ?? "root")]
+        if let before { query.append(URLQueryItem(name: "before", value: before)) }
+        let data = try await getWorkspaceData(query: query, accessToken: accessToken)
+        return try JSONDecoder().decode(DocumentPage.self, from: data)
+    }
+
+    private static func getWorkspaceData(query: [URLQueryItem], accessToken: String) async throws -> Data {
+        guard var url = URLComponents(url: CookieAPIEndpoints.documents, resolvingAgainstBaseURL: false) else {
             throw DocumentsAPIError.invalidResponse
         }
-        guard (200..<300).contains(http.statusCode) else {
-            if http.statusCode == 401 { throw DocumentsAPIError.unauthorized }
-            throw DocumentsAPIError.server(status: http.statusCode)
-        }
-
-        return try JSONDecoder().decode(DocumentWorkspace.self, from: data)
+        url.queryItems = query
+        guard let endpoint = url.url else { throw DocumentsAPIError.invalidResponse }
+        var request = URLRequest(url: endpoint)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        return try await send(request)
     }
 
     /// Fetches one document including its blocks — `GET /documents?id=…`.

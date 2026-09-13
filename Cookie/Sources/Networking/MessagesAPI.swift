@@ -106,7 +106,7 @@ struct MessagesAPI {
         else {
             throw MessagesAPIError.invalidResponse
         }
-        components.queryItems = [URLQueryItem(name: "id", value: id)]
+        components.queryItems = [URLQueryItem(name: "id", value: id), URLQueryItem(name: "calendar", value: "deferred")]
         guard let url = components.url else {
             throw MessagesAPIError.invalidResponse
         }

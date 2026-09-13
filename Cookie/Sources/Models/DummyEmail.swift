@@ -1,13 +1,24 @@
 import SwiftUI
 
-enum EmailFilter: String, CaseIterable, Identifiable {
-    case newsletters = "Newsletters"
-    case personal = "Personal"
-    case recruitment = "Recruitment"
-    case shopping = "Shopping"
-    case work = "Work"
+struct EmailFilter: RawRepresentable, Hashable, Identifiable {
+    let rawValue: String
+    var id: String { rawValue }
 
-    var id: Self { self }
+    static let newsletters = Self(rawValue: "Newsletters")
+    static let personal = Self(rawValue: "Personal")
+    static let recruitment = Self(rawValue: "Recruitment")
+    static let shopping = Self(rawValue: "Shopping")
+    static let work = Self(rawValue: "Work")
+    static let uncategorised = Self(rawValue: "Uncategorised")
+
+    init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    init(category: EmailCategory?) {
+        let name = category?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self = name.isEmpty ? .uncategorised : Self(rawValue: name)
+    }
 }
 
 struct DummyEmail: Identifiable, Hashable {
@@ -115,10 +126,7 @@ extension DummyEmail {
             subject: subjectText.isEmpty ? "(no subject)" : subjectText,
             preview: message.snippet ?? "",
             isUnread: message.isUnread,
-            // The backend's labels are free-form per-user tags, not this
-            // enum's fixed categories, so live email defaults to `.personal`
-            // until the inbox gets real category filtering.
-            filter: .personal
+            filter: EmailFilter(category: message.category)
         )
     }
 
@@ -155,19 +163,14 @@ extension DummyEmail {
         return avatarPalette[index]
     }
 
-    // Formatters are created per call rather than cached in static state:
-    // both `DateFormatter` and `ISO8601DateFormatter` are mutable and not
-    // `Sendable`, which the project's `SWIFT_STRICT_CONCURRENCY = complete`
-    // setting rejects for shared global state.
-    private static func formattedTime(from iso8601: String) -> String {
-        // Postgres `timestamptz` values (`sent_at`) include fractional
-        // seconds, which the default `ISO8601DateFormatter` options reject.
-        let isoParser = ISO8601DateFormatter()
-        isoParser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = isoParser.date(from: iso8601) else { return "" }
+    // Format styles are immutable, Sendable values. Foundation caches their
+    // formatting machinery, avoiding mutable global formatters under Swift 6.
+    private static let fractionalTimestamp = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private static let wholeTimestamp = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
 
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateFormat = "h:mm a"
-        return timeFormatter.string(from: date)
+    private static func formattedTime(from iso8601: String) -> String {
+        guard let date = (try? fractionalTimestamp.parse(iso8601))
+            ?? (try? wholeTimestamp.parse(iso8601)) else { return "" }
+        return date.formatted(.dateTime.hour(.defaultDigits(amPM: .abbreviated)).minute(.twoDigits))
     }
 }

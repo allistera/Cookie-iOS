@@ -4,6 +4,7 @@ struct InboxToolbar: View {
     @Binding var selectedFilter: EmailFilter?
     @Binding var searchText: String
     let isSearching: Bool
+    var filters: [EmailFilter] = []
     var onSubmit: () -> Void
     var onSearchChange: () -> Void
     var onClear: () -> Void
@@ -16,7 +17,7 @@ struct InboxToolbar: View {
                     Text("All emails")
                         .tag(EmailFilter?.none)
 
-                    ForEach(EmailFilter.allCases) { filter in
+                    ForEach(filters) { filter in
                         Text(filter.rawValue)
                             .tag(Optional(filter))
                     }
