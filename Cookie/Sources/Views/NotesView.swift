@@ -7,7 +7,9 @@ struct NotesView: View {
 
     @State private var folders: [DocumentFolder] = []
     @State private var documents: [DocumentSummary] = []
-    @State private var expandedFolderIDs: Set<String> = []
+    // Restored from the last launch; nothing stored means every folder is
+    // closed. Saved again whenever a folder is toggled.
+    @State private var expandedFolderIDs = ExpandedFolderStore.load()
     @State private var isLoadingInitialPage = true
     @State private var loadErrorMessage: String?
     @State private var workspacePaged = false
@@ -145,6 +147,9 @@ struct NotesView: View {
         }
         .task {
             await loadWorkspace()
+        }
+        .onChange(of: expandedFolderIDs) {
+            ExpandedFolderStore.save(expandedFolderIDs)
         }
     }
 
