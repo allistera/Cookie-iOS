@@ -27,7 +27,18 @@ enum AppSection: String, CaseIterable, Identifiable {
 struct InboxView: View {
     @Environment(AuthenticationManager.self) private var auth
     let profile: AuthenticationManager.Profile
+    /// Set by RootView when the app is opened through an inbox link; cleared
+    /// once acted on so the same link is not reopened on every state change.
+    @Binding private var deepLink: InboxDeepLink?
 
+    init(profile: AuthenticationManager.Profile, deepLink: Binding<InboxDeepLink?> = .constant(nil)) {
+        self.profile = profile
+        _deepLink = deepLink
+    }
+
+    @State private var path = NavigationPath()
+    /// The email a link asked for that the loaded inbox page does not hold yet.
+    @State private var pendingEmailID: UUID?
     @State private var showSignOutConfirmation = false
     @State private var mailbox = InboxMailbox()
     @State private var showComposer = false
@@ -59,6 +70,39 @@ struct InboxView: View {
         await mailbox.load(refresh: refresh) { before in
             let token = try await auth.validAccessToken()
             return try await EmailsAPI.fetchEmails(before: before, accessToken: token)
+        }
+        resolvePendingEmail()
+    }
+
+    // MARK: Deep links
+
+    /// Opens the email an ntfy notification's "Open in Cookie app" button
+    /// names. The inbox page is often still loading when the link lands, so
+    /// an id that is not on screen waits for the current load (or starts a
+    /// refresh) rather than giving up on the first miss — the same rule as
+    /// the web's `/inbox?open=` route.
+    private func consumeDeepLink() {
+        guard case .email(let id)? = deepLink else { return }
+        deepLink = nil
+        selectedSection = .email
+        pendingEmailID = id
+        if mailbox.emails.contains(where: { $0.id == id }) {
+            resolvePendingEmail()
+        } else if !mailbox.isLoading {
+            Task { await loadEmails() }
+        }
+    }
+
+    /// Runs after every inbox load: pushes the awaited email if it arrived,
+    /// or gives up once the inbox has settled without it.
+    private func resolvePendingEmail() {
+        guard let id = pendingEmailID else { return }
+        if let email = mailbox.emails.first(where: { $0.id == id }) {
+            pendingEmailID = nil
+            path = NavigationPath([email])
+        } else if !mailbox.isLoading {
+            pendingEmailID = nil
+            showToast("That email isn't in your inbox.")
         }
     }
 
@@ -197,7 +241,7 @@ struct InboxView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ZStack(alignment: .bottom) {
                 Color(.systemBackground).ignoresSafeArea()
 
@@ -291,6 +335,9 @@ struct InboxView: View {
             }
             .onChange(of: selectedFilter) {
                 if !activeSearchQuery.isEmpty { clearSearch() }
+            }
+            .onChange(of: deepLink, initial: true) {
+                consumeDeepLink()
             }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: DummyEmail.self) { email in
