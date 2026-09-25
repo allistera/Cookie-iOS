@@ -17,6 +17,12 @@ struct ComposeDraft {
     var hasBody: Bool {
         !body.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    /// What the Send button and `send()` both require, so the button is
+    /// never enabled for a draft that `send()` would silently ignore.
+    var isReadyToSend: Bool {
+        canSend && hasBody
+    }
 }
 
 extension ComposeDraft: Equatable {
@@ -155,14 +161,14 @@ struct ComposeView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .tint(.primary)
-            .disabled(!draft.canSend || isSending)
+            .disabled(!draft.isReadyToSend || isSending)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
     }
 
     private func send() async {
-        guard draft.canSend, draft.hasBody, !isSending else { return }
+        guard draft.isReadyToSend, !isSending else { return }
         isSending = true
         sendErrorMessage = nil
 

@@ -45,6 +45,9 @@ struct InboxView: View {
     @State private var selectedSection: AppSection = .email
     @State private var selectedFilter: EmailFilter?
     @State private var toastMessage: String?
+    /// The one pending toast dismissal; a newer toast cancels it so it can't
+    /// clear the replacement early.
+    @State private var toastTask: Task<Void, Never>?
     @State private var searchText = ""
     /// Non-empty while search results replace the inbox list — the same
     /// signal the web store's `activeSearchQuery` carries. Set only after a
@@ -66,11 +69,18 @@ struct InboxView: View {
         return mailbox.emails.filter { $0.filter == selectedFilter }
     }
 
+    private func fetchEmails(before: String?) async throws -> EmailListResponse {
+        let token = try await auth.validAccessToken()
+        return try await EmailsAPI.fetchEmails(before: before, accessToken: token)
+    }
+
     private func loadEmails(refresh: Bool = true) async {
-        await mailbox.load(refresh: refresh) { before in
-            let token = try await auth.validAccessToken()
-            return try await EmailsAPI.fetchEmails(before: before, accessToken: token)
-        }
+        await mailbox.load(refresh: refresh) { try await fetchEmails(before: $0) }
+        resolvePendingEmail()
+    }
+
+    private func loadEmailsIfNeeded() async {
+        await mailbox.loadIfNeeded { try await fetchEmails(before: $0) }
         resolvePendingEmail()
     }
 
@@ -194,9 +204,11 @@ struct InboxView: View {
     /// Shows a transient confirmation, mirroring Cookie-Web's toast
     /// notifications (`notify('Email sent.')`), and clears it after a beat.
     private func showToast(_ message: String) {
-        Task {
-            withAnimation { toastMessage = message }
+        toastTask?.cancel()
+        withAnimation { toastMessage = message }
+        toastTask = Task {
             try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
             withAnimation { toastMessage = nil }
         }
     }
@@ -231,7 +243,9 @@ struct InboxView: View {
                         searchResults.insert(email, at: min(originalSearchIndex, searchResults.count))
                     }
                 }
-                mailbox.errorMessage = "Couldn't mark that email as done. Try again."
+                // A toast, not `mailbox.errorMessage`: that line only shows
+                // on an empty inbox, and the row just came back.
+                showToast("Couldn't mark that email as done. Try again.")
             }
         }
     }
@@ -324,8 +338,10 @@ struct InboxView: View {
                     floatingToolbar
                 }
             }
+            // `.task` re-runs every time a pushed message pops back; only the
+            // first appearance loads, so the list keeps its pages and scroll.
             .task {
-                await loadEmails()
+                await loadEmailsIfNeeded()
             }
             // Leaving the email section or picking a category filter leaves
             // search mode too — on the web both are route changes, and every

@@ -7,8 +7,11 @@ import WebKit
 ///
 /// Defence-in-depth, mirroring the web reader:
 /// - JavaScript is disabled, so no script in the email can execute.
-/// - Remote http(s) images are blocked by a `WKContentRuleList` until the
-///   user opts in, so tracking pixels don't fire on open.
+/// - Remote http(s) subresources (images, stylesheets, fonts, media and
+///   raw fetches) are blocked by a `WKContentRuleList` until the user opts
+///   in, so tracking pixels and CSS/font beacons don't fire on open.
+/// - A non-persistent website data store keeps no cookies or cache between
+///   messages, so an opted-in load can't be correlated across emails.
 /// - Link taps are handed to Safari (http/https/mailto only); nothing ever
 ///   navigates in place.
 ///
@@ -17,7 +20,8 @@ import WebKit
 /// inside the detail screen's own ScrollView.
 struct EmailBodyWebView: UIViewRepresentable {
     let html: String
-    /// When true, remote http(s) image loads are blocked by content rules.
+    /// When true, remote http(s) subresource loads are blocked by content
+    /// rules ("Show images" turns this off).
     var blocksRemoteImages = true
     @Binding var contentHeight: CGFloat
 
@@ -28,6 +32,7 @@ struct EmailBodyWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+        configuration.websiteDataStore = .nonPersistent()
         configuration.allowsInlineMediaPlayback = false
         configuration.mediaTypesRequiringUserActionForPlayback = .all
 
@@ -64,22 +69,24 @@ struct EmailBodyWebView: UIViewRepresentable {
         }
     }
 
-    /// Whether the (untrusted) HTML references remote images — the same three
-    /// patterns Cookie-Web's `hasBlockedRemoteImages` checks, narrowed to
-    /// `<img src>` and CSS background URLs so a plain link doesn't trigger
-    /// the "Show images" control.
+    /// Whether the (untrusted) HTML references remote content the block rule
+    /// holds back — the three patterns Cookie-Web's `hasBlockedRemoteImages`
+    /// checks (`<img src>`, CSS `url()`, `background=`), plus remote
+    /// stylesheets and media, which the rule also blocks. Plain links don't
+    /// trigger the "Show images" control.
     nonisolated static func hasBlockedRemoteImages(_ html: String) -> Bool {
         guard !html.isEmpty else { return false }
-        if html.range(of: #"<img\b[^>]*\bsrc\s*=\s*["']?\s*https?://"#, options: [.regularExpression, .caseInsensitive]) != nil {
-            return true
+        let patterns = [
+            #"<img\b[^>]*\bsrc\s*=\s*["']?\s*https?://"#,
+            #"\burl\(\s*['"]?\s*https?://"#,
+            #"\bbackground\s*=\s*["']?\s*https?://"#,
+            #"<link\b[^>]*\bhref\s*=\s*["']?\s*https?://"#,
+            #"@import\s+['"]\s*https?://"#,
+            #"<(video|audio|source)\b[^>]*\bsrc\s*=\s*["']?\s*https?://"#,
+        ]
+        return patterns.contains {
+            html.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil
         }
-        if html.range(of: #"\burl\(\s*['"]?\s*https?://"#, options: [.regularExpression, .caseInsensitive]) != nil {
-            return true
-        }
-        if html.range(of: #"\bbackground\s*=\s*["']?\s*https?://"#, options: [.regularExpression, .caseInsensitive]) != nil {
-            return true
-        }
-        return false
     }
 
     @MainActor
@@ -93,6 +100,9 @@ struct EmailBodyWebView: UIViewRepresentable {
 
         private(set) var loadedHtml: String?
         private(set) var loadedBlocksRemoteImages: Bool?
+        /// The in-flight load. A newer load cancels it so a slow rule-list
+        /// compile can't re-add the block rule after an opted-in load.
+        private var loadTask: Task<Void, Never>?
         private var observation: NSKeyValueObservation?
         private weak var observedWebView: WKWebView?
 
@@ -102,20 +112,25 @@ struct EmailBodyWebView: UIViewRepresentable {
 
         /// Compiled once per app run; the default store also persists by
         /// identifier, but the rule text never changes so that's harmless.
-        private static var cachedImageBlockRuleList: WKContentRuleList?
-        private static let imageBlockRuleIdentifier = "cookie-block-remote-images"
-        private static let imageBlockRuleJSON = """
-        [{"trigger":{"url-filter":"^https?://","resource-type":["image"]},"action":{"type":"block"}}]
+        private static var cachedRemoteBlockRuleList: WKContentRuleList?
+        private static let remoteBlockRuleIdentifier = "cookie-block-remote-content"
+        /// Every remote subresource type that can report an open: images,
+        /// stylesheets (and their `url()` / `@import` loads), web fonts,
+        /// audio/video and raw fetches.
+        nonisolated static let remoteBlockRuleJSON = """
+        [{"trigger":{"url-filter":"^https?://",\
+        "resource-type":["image","style-sheet","font","media","raw"]},\
+        "action":{"type":"block"}}]
         """
 
-        private static func remoteImageBlockRuleList() async -> WKContentRuleList? {
-            if let cached = cachedImageBlockRuleList { return cached }
+        private static func remoteBlockRuleList() async -> WKContentRuleList? {
+            if let cached = cachedRemoteBlockRuleList { return cached }
             guard let store = WKContentRuleListStore.default() else { return nil }
             let list = try? await store.compileContentRuleList(
-                forIdentifier: imageBlockRuleIdentifier,
-                encodedContentRuleList: imageBlockRuleJSON
+                forIdentifier: remoteBlockRuleIdentifier,
+                encodedContentRuleList: remoteBlockRuleJSON
             )
-            cachedImageBlockRuleList = list
+            cachedRemoteBlockRuleList = list
             return list
         }
 
@@ -163,12 +178,18 @@ struct EmailBodyWebView: UIViewRepresentable {
             loadedHtml = html
             loadedBlocksRemoteImages = blocksRemoteImages
 
-            Task { @MainActor [weak webView] in
-                guard let webView else { return }
-                webView.configuration.userContentController.removeAllContentRuleLists()
-                if blocksRemoteImages,
-                   let ruleList = await Self.remoteImageBlockRuleList() {
-                    webView.configuration.userContentController.add(ruleList)
+            loadTask?.cancel()
+            loadTask = Task { @MainActor [weak webView] in
+                var ruleList: WKContentRuleList?
+                if blocksRemoteImages {
+                    ruleList = await Self.remoteBlockRuleList()
+                }
+                // A newer load superseded this one while the rules compiled.
+                guard !Task.isCancelled, let webView else { return }
+                let controller = webView.configuration.userContentController
+                controller.removeAllContentRuleLists()
+                if let ruleList {
+                    controller.add(ruleList)
                 }
 
                 webView.loadHTMLString(Self.document(html: html), baseURL: nil)

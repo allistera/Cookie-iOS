@@ -194,9 +194,16 @@ struct EmailDetailView: View {
                         .font(.title3.bold())
                         .foregroundStyle(email.color)
                     Spacer()
-                    Text("\(email.sender.lowercased()).com")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    // The real From address, never a name-derived guess, so a
+                    // spoofed display name can't pass for a trusted domain.
+                    if !email.address.isEmpty {
+                        Text(email.address)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
                 }
 
                 messageBody
