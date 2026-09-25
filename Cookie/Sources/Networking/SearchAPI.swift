@@ -20,7 +20,7 @@ struct SearchAPI {
                 resolvingAgainstBaseURL: false
             )
         else {
-            throw EmailsAPIError.invalidResponse
+            throw APIError.invalidResponse
         }
 
         var queryItems = [URLQueryItem(name: "q", value: query)]
@@ -35,22 +35,10 @@ struct SearchAPI {
             .replacingOccurrences(of: "+", with: "%2B")
 
         guard let url = components.url else {
-            throw EmailsAPIError.invalidResponse
+            throw APIError.invalidResponse
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw EmailsAPIError.invalidResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            if http.statusCode == 401 { throw EmailsAPIError.unauthorized }
-            throw EmailsAPIError.server(status: http.statusCode)
-        }
-
-        return try JSONDecoder().decode(EmailListResponse.self, from: data).emails
+        let request = APIClient.request(url, accessToken: accessToken)
+        return try await APIClient.send(request, decoding: EmailListResponse.self).emails
     }
 }

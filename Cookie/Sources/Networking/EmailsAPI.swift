@@ -59,12 +59,6 @@ struct EmailListResponse: Decodable {
     let readReceiptsAvailable: Bool?
 }
 
-enum EmailsAPIError: Error {
-    case unauthorized
-    case server(status: Int)
-    case invalidResponse
-}
-
 /// Talks to the `cookie-web-emails` Cloudflare Worker — the same `/emails`
 /// endpoint the web app's Pinia inbox store calls.
 struct EmailsAPI {
@@ -78,15 +72,6 @@ struct EmailsAPI {
         before: String? = nil,
         accessToken: String
     ) async throws -> EmailListResponse {
-        guard
-            var components = URLComponents(
-                url: CookieAPIEndpoints.emails,
-                resolvingAgainstBaseURL: false
-            )
-        else {
-            throw EmailsAPIError.invalidResponse
-        }
-
         var queryItems = [
             URLQueryItem(name: "folder", value: folder),
             URLQueryItem(name: "limit", value: String(limit)),
@@ -94,25 +79,7 @@ struct EmailsAPI {
         if let before {
             queryItems.append(URLQueryItem(name: "before", value: before))
         }
-        components.queryItems = queryItems
-
-        guard let url = components.url else {
-            throw EmailsAPIError.invalidResponse
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw EmailsAPIError.invalidResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            if http.statusCode == 401 { throw EmailsAPIError.unauthorized }
-            throw EmailsAPIError.server(status: http.statusCode)
-        }
-
-        return try JSONDecoder().decode(EmailListResponse.self, from: data)
+        let url = try APIClient.url(CookieAPIEndpoints.emails, query: queryItems)
+        return try await APIClient.send(APIClient.request(url, accessToken: accessToken), decoding: EmailListResponse.self)
     }
 }

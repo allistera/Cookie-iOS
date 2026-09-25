@@ -1,15 +1,5 @@
 import Foundation
 
-enum CalendarEventsAPIError: Error {
-    case unauthorized
-    /// The per-user AI quota (10 requests/minute) was exhausted — surfaced
-    /// separately so the UI can show the same wait-a-moment message the web
-    /// app does for 429s.
-    case rateLimited
-    case server(status: Int)
-    case invalidResponse
-}
-
 /// Talks to the `cookie-web-calendar` Cloudflare Worker — the same endpoints
 /// the web app's CalendarView uses to create events from
 /// natural language: one `action: "interpret"` call turns the text into a
@@ -83,53 +73,33 @@ struct CalendarEventsAPI {
     /// The user's calendars, needed to pick the default one an AI-created
     /// event files under (the create endpoint requires an owned calendar id).
     static func fetchCalendars(accessToken: String) async throws -> [CalendarSummary] {
-        var request = URLRequest(url: CookieAPIEndpoints.calendars)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-
-        let data = try await send(request)
-        return try JSONDecoder().decode(CalendarsResponse.self, from: data).calendars
+        let request = APIClient.request(CookieAPIEndpoints.calendars, accessToken: accessToken)
+        return try await APIClient.send(request, decoding: CalendarsResponse.self).calendars
     }
 
     /// Asks the backend's model to turn free text ("Dinner with Sam tomorrow
     /// at 7pm") into an event draft. `timeZone` is the IANA identifier the
     /// server resolves relative dates in.
     static func interpretEvent(text: String, timeZone: String, accessToken: String) async throws -> EventDraft {
-        var request = URLRequest(url: CookieAPIEndpoints.calendarEvents)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(InterpretBody(text: text, timeZone: timeZone))
-
-        let data = try await send(request)
-        return try JSONDecoder().decode(InterpretResponse.self, from: data).draft
+        let request = APIClient.request(
+            CookieAPIEndpoints.calendarEvents,
+            method: "POST",
+            accessToken: accessToken,
+            jsonBody: try JSONEncoder().encode(InterpretBody(text: text, timeZone: timeZone))
+        )
+        return try await APIClient.send(request, decoding: InterpretResponse.self).draft
     }
 
     /// Saves an interpreted draft as a real event. `tone: "accepted"` matches
     /// what the web client sends so AI-created events render like confirmed
     /// ones rather than suggestions.
     static func createEvent(_ draft: EventDraft, calendar: String, accessToken: String) async throws {
-        var request = URLRequest(url: CookieAPIEndpoints.calendarEvents)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(
-            CreateEventBody(draft: draft, calendar: calendar, tone: "accepted")
+        let request = APIClient.request(
+            CookieAPIEndpoints.calendarEvents,
+            method: "POST",
+            accessToken: accessToken,
+            jsonBody: try JSONEncoder().encode(CreateEventBody(draft: draft, calendar: calendar, tone: "accepted"))
         )
-
-        _ = try await send(request)
-    }
-
-    private static func send(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw CalendarEventsAPIError.invalidResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            if http.statusCode == 401 { throw CalendarEventsAPIError.unauthorized }
-            if http.statusCode == 429 { throw CalendarEventsAPIError.rateLimited }
-            throw CalendarEventsAPIError.server(status: http.statusCode)
-        }
-        return data
+        try await APIClient.send(request)
     }
 }

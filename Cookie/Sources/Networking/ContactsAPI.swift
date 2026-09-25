@@ -13,19 +13,7 @@ struct ContactsAPI {
     /// - Parameter accessToken: A valid Auth0 access token for the
     ///   `cookie-web` API audience.
     static func fetchContacts(accessToken: String) async throws -> [Contact] {
-        var request = URLRequest(url: CookieAPIEndpoints.contacts)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw MessagesAPIError.invalidResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            if http.statusCode == 401 { throw MessagesAPIError.unauthorized }
-            throw MessagesAPIError.server(status: http.statusCode)
-        }
-
-        return try JSONDecoder().decode(ContactsResponse.self, from: data).contacts
+        let request = APIClient.request(CookieAPIEndpoints.contacts, accessToken: accessToken)
+        return try await APIClient.send(request, decoding: ContactsResponse.self).contacts
     }
 }

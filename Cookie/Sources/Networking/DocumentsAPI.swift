@@ -97,15 +97,6 @@ struct DocumentDetail: Decodable, Sendable {
     }
 }
 
-enum DocumentsAPIError: Error, Equatable {
-    case unauthorized
-    /// The document changed elsewhere since it was loaded; the save was
-    /// rejected rather than clobbering the newer copy.
-    case conflict
-    case server(status: Int)
-    case invalidResponse
-}
-
 /// Talks to Cookie-Web's `cookie-web-tasks` Cloudflare Worker
 /// `GET /documents` — the same workspace endpoint the web app's Pinia
 /// `documents` store calls in `loadWorkspace`, which backs the Documents
@@ -115,7 +106,7 @@ struct DocumentsAPI {
     /// - Parameter accessToken: A valid Auth0 access token for the
     ///   `cookie-web` API audience.
     static func fetchWorkspace(accessToken: String) async throws -> DocumentWorkspace {
-        let data = try await getWorkspaceData(query: [URLQueryItem(name: "view", value: "meta")], accessToken: accessToken)
+        let data = try await getDocuments(query: [URLQueryItem(name: "view", value: "meta")], accessToken: accessToken)
         struct Metadata: Decodable {
             let folders: [DocumentFolder]
             let documents: [DocumentSummary]?
@@ -138,39 +129,18 @@ struct DocumentsAPI {
     static func fetchDocumentPage(folderID: String?, before: String? = nil, accessToken: String) async throws -> DocumentPage {
         var query = [URLQueryItem(name: "view", value: "page"), URLQueryItem(name: "folder", value: folderID ?? "root")]
         if let before { query.append(URLQueryItem(name: "before", value: before)) }
-        let data = try await getWorkspaceData(query: query, accessToken: accessToken)
+        let data = try await getDocuments(query: query, accessToken: accessToken)
         return try JSONDecoder().decode(DocumentPage.self, from: data)
     }
 
-    private static func getWorkspaceData(query: [URLQueryItem], accessToken: String) async throws -> Data {
-        guard var url = URLComponents(url: CookieAPIEndpoints.documents, resolvingAgainstBaseURL: false) else {
-            throw DocumentsAPIError.invalidResponse
-        }
-        url.queryItems = query
-        guard let endpoint = url.url else { throw DocumentsAPIError.invalidResponse }
-        var request = URLRequest(url: endpoint)
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        return try await send(request)
+    private static func getDocuments(query: [URLQueryItem], accessToken: String) async throws -> Data {
+        let url = try APIClient.url(CookieAPIEndpoints.documents, query: query)
+        return try await APIClient.send(APIClient.request(url, accessToken: accessToken))
     }
 
     /// Fetches one document including its blocks — `GET /documents?id=…`.
     static func fetchDocument(id: String, accessToken: String) async throws -> DocumentDetail {
-        guard
-            var components = URLComponents(
-                url: CookieAPIEndpoints.documents,
-                resolvingAgainstBaseURL: false
-            )
-        else {
-            throw DocumentsAPIError.invalidResponse
-        }
-        components.queryItems = [URLQueryItem(name: "id", value: id)]
-        guard let url = components.url else { throw DocumentsAPIError.invalidResponse }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-
-        let data = try await send(request)
+        let data = try await getDocuments(query: [URLQueryItem(name: "id", value: id)], accessToken: accessToken)
         return try JSONDecoder().decode(DocumentResponse.self, from: data).document
     }
 
@@ -191,26 +161,25 @@ struct DocumentsAPI {
         _ body: SaveDocumentBody,
         accessToken: String
     ) async throws -> DocumentSummary {
-        var request = URLRequest(url: CookieAPIEndpoints.documents)
-        request.httpMethod = "PATCH"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(body)
-
-        let data = try await send(request)
-        return try JSONDecoder().decode(DocumentSummaryResponse.self, from: data).document
+        let request = APIClient.request(
+            CookieAPIEndpoints.documents,
+            method: "PATCH",
+            accessToken: accessToken,
+            jsonBody: try JSONEncoder().encode(body)
+        )
+        return try await APIClient.send(request, decoding: DocumentSummaryResponse.self).document
     }
 
     /// A conflict never overwrites the remote document. Save the local draft
     /// as a separate note when the user explicitly chooses that recovery.
     static func createCopy(title: String, blocks: [DocumentBlock], accessToken: String) async throws -> DocumentSummary {
-        var request = URLRequest(url: CookieAPIEndpoints.documents)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["kind": "document", "title": title + " (copy)"])
-        let data = try await send(request)
-        let created = try JSONDecoder().decode(DocumentSummaryResponse.self, from: data).document
+        let request = APIClient.request(
+            CookieAPIEndpoints.documents,
+            method: "POST",
+            accessToken: accessToken,
+            jsonBody: try JSONSerialization.data(withJSONObject: ["kind": "document", "title": title + " (copy)"])
+        )
+        let created = try await APIClient.send(request, decoding: DocumentSummaryResponse.self).document
         return try await saveDocument(.init(id: created.id, blocks: blocks, updatedAt: created.updatedAt), accessToken: accessToken)
     }
 
@@ -220,20 +189,5 @@ struct DocumentsAPI {
 
     private struct DocumentSummaryResponse: Decodable {
         let document: DocumentSummary
-    }
-
-    private static func send(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw DocumentsAPIError.invalidResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            switch http.statusCode {
-            case 401: throw DocumentsAPIError.unauthorized
-            case 409: throw DocumentsAPIError.conflict
-            default: throw DocumentsAPIError.server(status: http.statusCode)
-            }
-        }
-        return data
     }
 }

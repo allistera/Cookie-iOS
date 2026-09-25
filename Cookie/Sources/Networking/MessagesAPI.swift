@@ -33,12 +33,6 @@ struct MessageBody: Decodable {
     }
 }
 
-enum MessagesAPIError: Error {
-    case unauthorized
-    case server(status: Int)
-    case invalidResponse
-}
-
 /// Talks to Cookie-Web's `cookie-web-messages` Cloudflare Worker — the same
 /// per-message read/flag/archive endpoint the web app's Pinia `inbox` store
 /// calls (see `stores/inbox.js`'s `updateMessage` and `archiveEmail`).
@@ -71,20 +65,13 @@ struct MessagesAPI {
 
     /// Updates one or more flags on a message the caller owns.
     static func updateMessage(_ body: PatchMessageBody, accessToken: String) async throws {
-        var request = URLRequest(url: CookieAPIEndpoints.messages)
-        request.httpMethod = "PATCH"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(body)
-
-        let (_, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw MessagesAPIError.invalidResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            if http.statusCode == 401 { throw MessagesAPIError.unauthorized }
-            throw MessagesAPIError.server(status: http.statusCode)
-        }
+        let request = APIClient.request(
+            CookieAPIEndpoints.messages,
+            method: "PATCH",
+            accessToken: accessToken,
+            jsonBody: try JSONEncoder().encode(body)
+        )
+        try await APIClient.send(request)
     }
 
     /// Marks a message "Done" — archives it and clears its unread flag,
@@ -98,32 +85,10 @@ struct MessagesAPI {
     /// The inbox list deliberately omits `body_html`, so this is the only
     /// source of the complete message text.
     static func fetchMessageBody(id: String, accessToken: String) async throws -> MessageBody {
-        guard
-            var components = URLComponents(
-                url: CookieAPIEndpoints.messages,
-                resolvingAgainstBaseURL: false
-            )
-        else {
-            throw MessagesAPIError.invalidResponse
-        }
-        components.queryItems = [URLQueryItem(name: "id", value: id), URLQueryItem(name: "calendar", value: "deferred")]
-        guard let url = components.url else {
-            throw MessagesAPIError.invalidResponse
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw MessagesAPIError.invalidResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            if http.statusCode == 401 { throw MessagesAPIError.unauthorized }
-            throw MessagesAPIError.server(status: http.statusCode)
-        }
-
-        return try JSONDecoder().decode(MessageBody.self, from: data)
+        let url = try APIClient.url(
+            CookieAPIEndpoints.messages,
+            query: [URLQueryItem(name: "id", value: id), URLQueryItem(name: "calendar", value: "deferred")]
+        )
+        return try await APIClient.send(APIClient.request(url, accessToken: accessToken), decoding: MessageBody.self)
     }
 }

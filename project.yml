@@ -45,6 +45,10 @@ targets:
     info:
       path: Cookie/Sources/Info.plist
       properties:
+        # Read the build settings so fastlane's CURRENT_PROJECT_VERSION override
+        # reaches the archive; XcodeGen otherwise hardcodes 1 / 1.0 here.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         ITSAppUsesNonExemptEncryption: false
         CFBundleURLTypes:
           - CFBundleTypeRole: Editor
