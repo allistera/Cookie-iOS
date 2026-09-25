@@ -79,6 +79,42 @@ final class DocumentBodyTests: XCTestCase {
         XCTAssertEqual(texts(rows), ["Before", "<table>", "After"])
     }
 
+    /// Typing rebuilds only the edited block's lines; the result must match a
+    /// full rebuild, including a block whose line count differs.
+    func testReplacingOneBlocksRowsMatchesAFullRebuild() throws {
+        let original = try blocks("""
+        [{"type": "paragraph", "data": {"text": "Intro"}},
+         {"type": "list", "data": {"style": "ordered", "items": [
+            {"content": "One", "items": [{"content": "Nested", "items": []}]},
+            {"content": "Two", "items": []}]}},
+         {"type": "table", "data": {}},
+         {"type": "paragraph", "data": {"text": "Outro"}}]
+        """)
+        let before = DocumentBody.rows(in: original)
+        let updated = DocumentBody.setting(
+            "Nested edit",
+            at: .init(blockIndex: 1, itemPath: [0, 0]),
+            in: original
+        )
+
+        let patched = DocumentBody.rows(before, replacingBlockAt: 1, in: updated)
+
+        XCTAssertEqual(patched, DocumentBody.rows(in: updated))
+        XCTAssertEqual(texts(patched), ["Intro", "One", "Nested edit", "Two", "<table>", "Outro"])
+    }
+
+    func testReplacingTheLastBlocksRowsMatchesAFullRebuild() throws {
+        let original = try blocks("""
+        [{"type": "paragraph", "data": {"text": "First"}},
+         {"type": "paragraph", "data": {"text": "Last"}}]
+        """)
+        let updated = DocumentBody.setting("Last edit", at: .init(blockIndex: 1), in: original)
+
+        let patched = DocumentBody.rows(DocumentBody.rows(in: original), replacingBlockAt: 1, in: updated)
+
+        XCTAssertEqual(patched, DocumentBody.rows(in: updated))
+    }
+
     // MARK: - Writing
 
     func testEditingOneBlockLeavesTheOthersByteForByteIntact() throws {

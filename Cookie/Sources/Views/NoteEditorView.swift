@@ -17,9 +17,16 @@ struct NoteEditorView: View {
 
     @State private var title = ""
     @State private var blocks: [DocumentBlock] = []
+    /// Derived from `blocks` once per change rather than on every body
+    /// evaluation, since building them strips the HTML of every block. Typing
+    /// rebuilds only the edited block's lines.
+    @State private var rows: [DocumentBodyRow] = []
+    @State private var baseline = NoteEditBaseline()
     @State private var isLoading = true
     @State private var loadErrorMessage: String?
     @State private var isSavingCopy = false
+    @State private var isDiscarding = false
+    @State private var showsLeaveFailure = false
     @State private var saves = NoteSaveCoordinator()
     @Environment(\.dismiss) private var dismiss
 
@@ -27,7 +34,10 @@ struct NoteEditorView: View {
 
     @FocusState private var focusedField: BlockFieldPath?
 
-    private var rows: [DocumentBodyRow] { DocumentBody.rows(in: blocks) }
+    private func setBlocks(_ newBlocks: [DocumentBlock]) {
+        blocks = newBlocks
+        rows = DocumentBody.rows(in: newBlocks)
+    }
 
     // MARK: - Loading
 
@@ -39,7 +49,8 @@ struct NoteEditorView: View {
                 accessToken: accessToken
             )
             title = detail.title ?? ""
-            blocks = detail.blocks
+            setBlocks(detail.blocks)
+            baseline.loaded(title: title, blocks: blocks)
             saves.configure(updatedAt: detail.updatedAt ?? document.updatedAt)
             loadErrorMessage = nil
         } catch {
@@ -51,7 +62,9 @@ struct NoteEditorView: View {
     // MARK: - Saving
 
     private func edited() {
-        guard !isLoading else { return }
+        // `onChange(of: title)` also fires for the title `load()` set, after
+        // `isLoading` is already false, so compare against the loaded content.
+        guard !isLoading, baseline.isEdit(title: title, blocks: blocks) else { return }
         saves.edited(id: document.id, title: title, blocks: blocks)
         debounceTask?.cancel()
         debounceTask = Task {
@@ -76,7 +89,17 @@ struct NoteEditorView: View {
     private func leave() {
         guard !isSavingCopy else { return }
         debounceTask?.cancel()
-        Task { if await save() { dismiss() } }
+        Task {
+            if await save() { dismiss() } else { showsLeaveFailure = true }
+        }
+    }
+
+    /// The way out when saving keeps failing (offline, say): the system back
+    /// button and swipe are hidden, so without this the user is trapped.
+    private func discardAndLeave() {
+        debounceTask?.cancel()
+        isDiscarding = true
+        dismiss()
     }
 
     private func saveCopy() {
@@ -100,6 +123,7 @@ struct NoteEditorView: View {
 
     private func flushOnExit() {
         debounceTask?.cancel()
+        guard !isDiscarding else { return }
         Task { await save() }
     }
 
@@ -111,14 +135,17 @@ struct NoteEditorView: View {
             set: { newValue in
                 let updated = DocumentBody.setting(newValue, at: field.path, in: blocks)
                 guard updated != blocks else { return }
+                // Only this field's block changed, so only its lines are
+                // rebuilt; the rest keep their already-stripped text.
                 blocks = updated
+                rows = DocumentBody.rows(rows, replacingBlockAt: field.path.blockIndex, in: updated)
                 edited()
             }
         )
     }
 
     private func addParagraph() {
-        blocks = DocumentBody.appendingParagraph(to: blocks)
+        setBlocks(DocumentBody.appendingParagraph(to: blocks))
         edited()
         if case .editable(let field) = rows.last {
             focusedField = field.path
@@ -126,7 +153,7 @@ struct NoteEditorView: View {
     }
 
     private func deleteBlock(at index: Int) {
-        blocks = DocumentBody.removingBlock(at: index, from: blocks)
+        setBlocks(DocumentBody.removingBlock(at: index, from: blocks))
         edited()
     }
 
@@ -193,6 +220,11 @@ struct NoteEditorView: View {
                 }
             }
         }
+        .confirmationDialog("Couldn't save your changes", isPresented: $showsLeaveFailure, titleVisibility: .visible) {
+            Button("Save a copy", action: saveCopy)
+            Button("Discard changes", role: .destructive, action: discardAndLeave)
+            Button("Keep editing", role: .cancel) {}
+        }
         .task { await load() }
         .onDisappear { flushOnExit() }
     }
@@ -216,6 +248,8 @@ struct NoteEditorView: View {
                 Button("Retry") { Task { await save() } }
                     .disabled(isSavingCopy)
                 Button("Save a copy", action: saveCopy)
+                    .disabled(isSavingCopy)
+                Button("Discard changes", role: .destructive, action: discardAndLeave)
                     .disabled(isSavingCopy)
             } label: {
                 Text(message).font(.caption).foregroundStyle(.red)

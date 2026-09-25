@@ -86,39 +86,62 @@ enum DocumentBody {
     // MARK: - Reading
 
     static func rows(in blocks: [DocumentBlock]) -> [DocumentBodyRow] {
+        blocks.indices.flatMap { rows(forBlockAt: $0, in: blocks) }
+    }
+
+    /// Returns `rows` with the lines of the block at `index` rebuilt from
+    /// `blocks`, leaving every other block's lines as they were. Typing into
+    /// one field only changes its own block, so this spares re-stripping the
+    /// HTML of the whole document on every keystroke. Only valid when block
+    /// indices haven't shifted since `rows` was built.
+    static func rows(
+        _ rows: [DocumentBodyRow],
+        replacingBlockAt index: Int,
+        in blocks: [DocumentBlock]
+    ) -> [DocumentBodyRow] {
+        guard let start = rows.firstIndex(where: { $0.blockIndex == index }) else {
+            return self.rows(in: blocks)
+        }
+        let end = rows[start...].firstIndex(where: { $0.blockIndex != index }) ?? rows.endIndex
+        var updated = rows
+        updated.replaceSubrange(start..<end, with: self.rows(forBlockAt: index, in: blocks))
+        return updated
+    }
+
+    static func rows(forBlockAt index: Int, in blocks: [DocumentBlock]) -> [DocumentBodyRow] {
+        guard blocks.indices.contains(index) else { return [] }
+        let block = blocks[index]
         var rows: [DocumentBodyRow] = []
-        for (index, block) in blocks.enumerated() {
-            switch block.type {
-            case "paragraph":
-                rows.append(editableRow(index, .paragraph, html: block.data?["text"]))
-            case "header":
-                let level = block.data?["level"]?.intValue ?? 2
-                rows.append(editableRow(index, .header(level: level), html: block.data?["text"]))
-            case "quote":
-                rows.append(editableRow(index, .quote, html: block.data?["text"]))
-            case "code":
-                let code = block.data?["code"]?.stringValue ?? ""
-                rows.append(.editable(.init(
-                    path: .init(blockIndex: index),
-                    style: .code,
-                    text: code
-                )))
-            case "list":
-                let items = block.data?["items"]?.arrayValue ?? []
-                if items.isEmpty {
-                    rows.append(.unsupported(blockIndex: index, type: block.type))
-                } else {
-                    appendListRows(
-                        items,
-                        blockIndex: index,
-                        style: block.data?["style"]?.stringValue ?? "unordered",
-                        parentPath: [],
-                        into: &rows
-                    )
-                }
-            default:
+        switch block.type {
+        case "paragraph":
+            rows.append(editableRow(index, .paragraph, html: block.data?["text"]))
+        case "header":
+            let level = block.data?["level"]?.intValue ?? 2
+            rows.append(editableRow(index, .header(level: level), html: block.data?["text"]))
+        case "quote":
+            rows.append(editableRow(index, .quote, html: block.data?["text"]))
+        case "code":
+            let code = block.data?["code"]?.stringValue ?? ""
+            rows.append(.editable(.init(
+                path: .init(blockIndex: index),
+                style: .code,
+                text: code
+            )))
+        case "list":
+            let items = block.data?["items"]?.arrayValue ?? []
+            if items.isEmpty {
                 rows.append(.unsupported(blockIndex: index, type: block.type))
+            } else {
+                appendListRows(
+                    items,
+                    blockIndex: index,
+                    style: block.data?["style"]?.stringValue ?? "unordered",
+                    parentPath: [],
+                    into: &rows
+                )
             }
+        default:
+            rows.append(.unsupported(blockIndex: index, type: block.type))
         }
         return rows
     }
@@ -313,5 +336,30 @@ enum DocumentBody {
         case "": "Block"
         default: type.prefix(1).uppercased() + type.dropFirst()
         }
+    }
+}
+
+/// A note's content exactly as it was loaded, so SwiftUI echoing the load
+/// back through `onChange` is not mistaken for an edit and saved — which
+/// would bump `updated_at` and can conflict with the web app.
+struct NoteEditBaseline {
+    private struct Content: Equatable {
+        var title: String
+        var blocks: [DocumentBlock]
+    }
+
+    private var unedited: Content?
+
+    mutating func loaded(title: String, blocks: [DocumentBlock]) {
+        unedited = Content(title: title, blocks: blocks)
+    }
+
+    /// Whether this content is a real edit. After the first one every change
+    /// counts, so typing and then undoing back to the original still saves
+    /// over the draft that went out in between.
+    mutating func isEdit(title: String, blocks: [DocumentBlock]) -> Bool {
+        if unedited == Content(title: title, blocks: blocks) { return false }
+        unedited = nil
+        return true
     }
 }

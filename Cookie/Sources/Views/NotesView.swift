@@ -45,7 +45,7 @@ struct NotesView: View {
             folders = workspace.folders
             documents = workspace.documents
             loadErrorMessage = nil
-            for id in expandedFolderIDs { await loadFolder(id) }
+            await loadFolders(Array(expandedFolderIDs))
         } catch {
             loadErrorMessage = "Couldn't load your notes. Pull to refresh to try again."
         }
@@ -53,23 +53,56 @@ struct NotesView: View {
     }
 
     private func loadFolder(_ id: String) async {
-        guard workspacePaged, !loadingFolders.contains(id) else { return }
-        if loadedFolders.contains(id), pageCursors[id] == nil { return }
+        await loadFolders([id])
+    }
+
+    /// Fetches the next page of each folder concurrently, then merges the
+    /// pages in `ids` order, exactly as one-at-a-time loads would. A folder
+    /// that fails doesn't stop the others from landing.
+    private func loadFolders(_ ids: [String]) async {
+        guard workspacePaged else { return }
+        let ids = ids.filter { id in
+            !loadingFolders.contains(id) && !(loadedFolders.contains(id) && pageCursors[id] == nil)
+        }
+        guard !ids.isEmpty else { return }
         let requestGeneration = generation
-        loadingFolders.insert(id)
-        defer { loadingFolders.remove(id) }
+        loadingFolders.formUnion(ids)
+        defer { loadingFolders.subtract(ids) }
+        let token: String
         do {
-            let token = try await auth.validAccessToken()
-            let page = try await DocumentsAPI.fetchDocumentPage(folderID: id == "root" ? nil : id,
-                                                                before: pageCursors[id], accessToken: token)
-            guard requestGeneration == generation else { return }
+            token = try await auth.validAccessToken()
+        } catch {
+            loadErrorMessage = "Couldn't load more notes. Try again."
+            return
+        }
+        let requests = ids.map { (id: $0, cursor: pageCursors[$0]) }
+        let results = await withTaskGroup(of: (Int, Result<DocumentsAPI.DocumentPage, any Error>).self) { group in
+            for (index, request) in requests.enumerated() {
+                group.addTask {
+                    do {
+                        let page = try await DocumentsAPI.fetchDocumentPage(folderID: request.id == "root" ? nil : request.id,
+                                                                            before: request.cursor, accessToken: token)
+                        return (index, .success(page))
+                    } catch {
+                        return (index, .failure(error))
+                    }
+                }
+            }
+            var results = [Result<DocumentsAPI.DocumentPage, any Error>?](repeating: nil, count: requests.count)
+            for await (index, result) in group { results[index] = result }
+            return results
+        }
+        guard requestGeneration == generation else { return }
+        for (id, result) in zip(ids, results) {
+            guard case .success(let page) = result else {
+                loadErrorMessage = "Couldn't load more notes. Try again."
+                continue
+            }
             let incoming = Set(page.documents.map(\.id))
             documents.removeAll { incoming.contains($0.id) }
             documents.append(contentsOf: page.documents)
             pageCursors[id] = page.nextCursor
             loadedFolders.insert(id)
-        } catch {
-            loadErrorMessage = "Couldn't load more notes. Try again."
         }
     }
 
