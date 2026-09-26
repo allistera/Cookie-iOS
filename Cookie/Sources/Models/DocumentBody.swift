@@ -330,6 +330,7 @@ enum DocumentBody {
         case "table": "Table"
         case "image": "Image"
         case "kanban": "Kanban board"
+        case "toc": "Table of contents"
         case "excalidraw": "Drawing"
         case "delimiter": "Divider"
         case "list": "Empty list"
