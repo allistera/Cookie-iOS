@@ -73,19 +73,47 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     steps:
+      # Signing needs the App Store Connect key and the match repository. Until
+      # those secrets are configured the upload is skipped with a notice rather
+      # than failing every push to main; it runs as soon as they are added.
+      - name: Check signing secrets
+        id: signing
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_KEY_CONTENT }}
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+        run: |
+          missing=()
+          for name in APP_STORE_CONNECT_KEY_ID APP_STORE_CONNECT_ISSUER_ID \
+            APP_STORE_CONNECT_KEY_CONTENT MATCH_GIT_URL MATCH_PASSWORD; do
+            [[ -n "${!name}" ]] || missing+=("$name")
+          done
+          if (( ${#missing[@]} )); then
+            echo "::notice title=TestFlight upload skipped::Missing repository secrets: ${missing[*]}"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.signing.outputs.configured == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install XcodeGen
+        if: steps.signing.outputs.configured == 'true'
         run: brew install xcodegen
 
       - name: Set up Ruby
+        if: steps.signing.outputs.configured == 'true'
         uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
         with:
           ruby-version: "3.3"
           bundler-cache: true
 
       - name: Build and upload to TestFlight
+        if: steps.signing.outputs.configured == 'true'
         run: bundle exec fastlane ios beta
         env:
           CI: true
@@ -99,7 +127,7 @@ jobs:
           FASTLANE_HIDE_CHANGELOG: true
 
       - name: Upload IPA artifact
-        if: success()
+        if: success() && steps.signing.outputs.configured == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Cookie-testflight-ipa
