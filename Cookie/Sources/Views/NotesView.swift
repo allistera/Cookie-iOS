@@ -246,10 +246,11 @@ private struct DocumentRow: View {
             // Keeps the icon aligned with a folder's, past its chevron.
             Color.clear.frame(width: 14, height: 1)
 
-            if let emoji = document.emoji, !emoji.isEmpty {
+            switch DocumentIcon(document.emoji) {
+            case .emoji(let emoji):
                 Text(emoji)
-            } else {
-                Image(systemName: "doc.text")
+            case .systemImage(let name):
+                Image(systemName: name)
                     .foregroundStyle(.secondary)
             }
 
