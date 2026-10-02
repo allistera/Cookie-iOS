@@ -31,7 +31,11 @@ struct DummyEmail: Identifiable, Hashable {
     let address: String
     let initial: String
     let color: Color
+    /// The list-row timestamp: time of day for today's mail, otherwise a
+    /// short date.
     let time: String
+    /// When the message was sent; `nil` for the static preview data.
+    let sentAt: Date?
     let subject: String
     let preview: String
     let isUnread: Bool
@@ -44,6 +48,7 @@ struct DummyEmail: Identifiable, Hashable {
         initial: String,
         color: Color,
         time: String,
+        sentAt: Date? = nil,
         subject: String,
         preview: String,
         isUnread: Bool,
@@ -55,6 +60,7 @@ struct DummyEmail: Identifiable, Hashable {
         self.initial = initial
         self.color = color
         self.time = time
+        self.sentAt = sentAt
         self.subject = subject
         self.preview = preview
         self.isUnread = isUnread
@@ -115,6 +121,7 @@ extension DummyEmail {
         let name = message.fromName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let displaySender = name.isEmpty ? message.fromAddress : name
         let subjectText = message.subject?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sentAt = DummyEmail.parseTimestamp(message.sentAt)
 
         self.init(
             id: uuid,
@@ -122,7 +129,8 @@ extension DummyEmail {
             address: message.fromAddress,
             initial: String(displaySender.first ?? "?").uppercased(),
             color: DummyEmail.avatarColor(for: displaySender),
-            time: DummyEmail.formattedTime(from: message.sentAt),
+            time: sentAt.map { DummyEmail.listTimestamp(for: $0) } ?? "",
+            sentAt: sentAt,
             subject: subjectText.isEmpty ? "(no subject)" : subjectText,
             preview: message.snippet ?? "",
             isUnread: message.isUnread,
@@ -146,7 +154,13 @@ extension DummyEmail {
     /// complete original text — the composer is built from the row model,
     /// before the detail screen's full-body fetch has necessarily run.
     static func quotedReplyBody(for email: DummyEmail) -> String {
-        "\n\nOn \(email.time), \(email.sender) wrote:\n> \(email.preview)"
+        "\n\nOn \(email.fullTimestamp), \(email.sender) wrote:\n> \(email.preview)"
+    }
+
+    /// Date and time together, for the detail screen and reply quotes where
+    /// a bare "3:03 pm" or "12 Sep" would be ambiguous.
+    var fullTimestamp: String {
+        sentAt?.formatted(date: .abbreviated, time: .shortened) ?? time
     }
 
     private static let avatarPalette: [Color] = [
@@ -158,9 +172,19 @@ extension DummyEmail {
     ]
 
     private static func avatarColor(for sender: String) -> Color {
-        guard !sender.isEmpty else { return .black }
-        let index = abs(sender.hashValue) % avatarPalette.count
-        return avatarPalette[index]
+        avatarPalette[avatarPaletteIndex(for: sender)]
+    }
+
+    /// FNV-1a over the sender's UTF-8 bytes. `String.hashValue` is seeded
+    /// randomly per launch, so it would recolour every avatar on relaunch.
+    static func avatarPaletteIndex(for sender: String) -> Int {
+        guard !sender.isEmpty else { return 0 }
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in sender.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+        return Int(hash % UInt64(avatarPalette.count))
     }
 
     // Format styles are immutable, Sendable values. Foundation caches their
@@ -168,9 +192,26 @@ extension DummyEmail {
     private static let fractionalTimestamp = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
     private static let wholeTimestamp = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
 
-    private static func formattedTime(from iso8601: String) -> String {
-        guard let date = (try? fractionalTimestamp.parse(iso8601))
-            ?? (try? wholeTimestamp.parse(iso8601)) else { return "" }
-        return date.formatted(.dateTime.hour(.defaultDigits(amPM: .abbreviated)).minute(.twoDigits))
+    private static func parseTimestamp(_ iso8601: String) -> Date? {
+        (try? fractionalTimestamp.parse(iso8601)) ?? (try? wholeTimestamp.parse(iso8601))
+    }
+
+    /// Time of day for mail sent today; otherwise day and abbreviated month,
+    /// plus the year when it isn't the current one.
+    static func listTimestamp(
+        for date: Date,
+        now: Date = .now,
+        calendar: Calendar = .current,
+        locale: Locale = .current
+    ) -> String {
+        let style = Date.FormatStyle(locale: locale, calendar: calendar, timeZone: calendar.timeZone)
+        if calendar.isDate(date, inSameDayAs: now) {
+            return date.formatted(style.hour(.defaultDigits(amPM: .abbreviated)).minute(.twoDigits))
+        }
+        let dayMonth = style.day().month(.abbreviated)
+        if calendar.isDate(date, equalTo: now, toGranularity: .year) {
+            return date.formatted(dayMonth)
+        }
+        return date.formatted(dayMonth.year())
     }
 }

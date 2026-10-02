@@ -25,7 +25,8 @@ typealias DocumentsAPIError = APIError
 enum APIClient {
     /// Called when a Worker answers 401, so the session owner can try a token
     /// renewal and sign out if the refresh token itself is no longer valid.
-    @MainActor static var onUnauthorized: (@MainActor () -> Void)?
+    /// Returns the renewed access token, or `nil` when renewal failed.
+    @MainActor static var onUnauthorized: (@MainActor () async -> String?)?
 
     static func request(_ url: URL, method: String = "GET", accessToken: String, jsonBody: Data? = nil) -> URLRequest {
         var request = URLRequest(url: url)
@@ -44,8 +45,23 @@ enum APIClient {
             throw APIError.invalidResponse
         }
         components.queryItems = query
+        // URLComponents leaves "+" literal, but the Workers parse the query
+        // with URLSearchParams, which reads "+" as a space — the web client's
+        // encodeURIComponent sends %2B, so match it.
+        components.percentEncodedQuery = components.percentEncodedQuery?
+            .replacingOccurrences(of: "+", with: "%2B")
         guard let url = components.url else { throw APIError.invalidResponse }
         return url
+    }
+
+    /// `GET base?query` with the bearer token, decoding the JSON response.
+    static func get<Response: Decodable>(
+        _ base: URL,
+        query: [URLQueryItem],
+        accessToken: String,
+        decoding type: Response.Type
+    ) async throws -> Response {
+        try await send(request(try url(base, query: query), accessToken: accessToken), decoding: type)
     }
 
     /// The error a non-2xx status maps to, or `nil` for a success.
@@ -59,24 +75,36 @@ enum APIClient {
         }
     }
 
+    /// Sends `request`. A 401 triggers one token renewal; if it succeeds the
+    /// request is retried exactly once with the fresh token. A 401 on the
+    /// retry is surfaced as-is rather than renewing again.
     @discardableResult
     static func send(_ request: URLRequest) async throws -> Data {
+        let (data, status) = try await perform(request)
+        if status == 401, let accessToken = await renewedAccessToken() {
+            var retry = request
+            retry.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            let (retryData, retryStatus) = try await perform(retry)
+            if let error = error(forStatus: retryStatus) { throw error }
+            return retryData
+        }
+        if let error = error(forStatus: status) { throw error }
+        return data
+    }
+
+    private static func perform(_ request: URLRequest) async throws -> (Data, Int) {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
-        if let error = error(forStatus: http.statusCode) {
-            if error == .unauthorized { await reportUnauthorized() }
-            throw error
-        }
-        return data
+        return (data, http.statusCode)
     }
 
     static func send<Response: Decodable>(_ request: URLRequest, decoding type: Response.Type) async throws -> Response {
         try JSONDecoder().decode(type, from: try await send(request))
     }
 
-    @MainActor private static func reportUnauthorized() {
-        onUnauthorized?()
+    @MainActor private static func renewedAccessToken() async -> String? {
+        await onUnauthorized?()
     }
 }

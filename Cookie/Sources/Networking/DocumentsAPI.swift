@@ -16,11 +16,25 @@ struct DocumentFolder: Decodable, Identifiable, Hashable {
     }
 }
 
+/// A document with an optional, possibly blank title.
+protocol DocumentTitled {
+    var title: String? { get }
+}
+
+extension DocumentTitled {
+    /// Documents can be created with an empty title (`createDocument` defaults
+    /// to `''`), which Cookie-Web renders as "Untitled".
+    var displayTitle: String {
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "Untitled" : trimmed
+    }
+}
+
 /// A document row from the workspace endpoint. Blocks are never included in
 /// a list response — the web app fetches them separately when a document is
 /// opened, the same rule email bodies follow. `folderID` is `nil` for a
 /// document sitting at the root of the workspace.
-struct DocumentSummary: Decodable, Identifiable, Hashable {
+struct DocumentSummary: Decodable, Identifiable, Hashable, DocumentTitled {
     let id: String
     let folderID: String?
     let title: String?
@@ -30,13 +44,6 @@ struct DocumentSummary: Decodable, Identifiable, Hashable {
     /// Opaque ISO timestamp echoed back on save so the server can reject a
     /// write over a copy that changed elsewhere.
     let updatedAt: String?
-
-    /// Documents can be created with an empty title (`createDocument` defaults
-    /// to `''`), which Cookie-Web renders as "Untitled".
-    var displayTitle: String {
-        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? "Untitled" : trimmed
-    }
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -70,7 +77,7 @@ struct DocumentWorkspace: Decodable {
 
 /// A document with its blocks — only ever fetched one at a time, the way
 /// email bodies are. List responses never carry blocks.
-struct DocumentDetail: Decodable, Sendable {
+struct DocumentDetail: Decodable, Sendable, DocumentTitled {
     let id: String
     let title: String?
     let blocks: [DocumentBlock]
@@ -90,11 +97,6 @@ struct DocumentDetail: Decodable, Sendable {
         blocks = try container.decodeIfPresent([DocumentBlock].self, forKey: .blocks) ?? []
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
     }
-
-    var displayTitle: String {
-        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? "Untitled" : trimmed
-    }
 }
 
 /// Talks to Cookie-Web's `cookie-web-tasks` Cloudflare Worker
@@ -106,13 +108,13 @@ struct DocumentsAPI {
     /// - Parameter accessToken: A valid Auth0 access token for the
     ///   `cookie-web` API audience.
     static func fetchWorkspace(accessToken: String) async throws -> DocumentWorkspace {
-        let data = try await getDocuments(query: [URLQueryItem(name: "view", value: "meta")], accessToken: accessToken)
         struct Metadata: Decodable {
             let folders: [DocumentFolder]
             let documents: [DocumentSummary]?
             let version: String?
         }
-        let metadata = try JSONDecoder().decode(Metadata.self, from: data)
+        let metadata = try await getDocuments(query: [URLQueryItem(name: "view", value: "meta")], accessToken: accessToken,
+                                              decoding: Metadata.self)
         if let documents = metadata.documents {
             return DocumentWorkspace(folders: metadata.folders, documents: documents)
         }
@@ -129,19 +131,21 @@ struct DocumentsAPI {
     static func fetchDocumentPage(folderID: String?, before: String? = nil, accessToken: String) async throws -> DocumentPage {
         var query = [URLQueryItem(name: "view", value: "page"), URLQueryItem(name: "folder", value: folderID ?? "root")]
         if let before { query.append(URLQueryItem(name: "before", value: before)) }
-        let data = try await getDocuments(query: query, accessToken: accessToken)
-        return try JSONDecoder().decode(DocumentPage.self, from: data)
+        return try await getDocuments(query: query, accessToken: accessToken, decoding: DocumentPage.self)
     }
 
-    private static func getDocuments(query: [URLQueryItem], accessToken: String) async throws -> Data {
-        let url = try APIClient.url(CookieAPIEndpoints.documents, query: query)
-        return try await APIClient.send(APIClient.request(url, accessToken: accessToken))
+    private static func getDocuments<Response: Decodable>(
+        query: [URLQueryItem],
+        accessToken: String,
+        decoding type: Response.Type
+    ) async throws -> Response {
+        try await APIClient.get(CookieAPIEndpoints.documents, query: query, accessToken: accessToken, decoding: type)
     }
 
     /// Fetches one document including its blocks — `GET /documents?id=…`.
     static func fetchDocument(id: String, accessToken: String) async throws -> DocumentDetail {
-        let data = try await getDocuments(query: [URLQueryItem(name: "id", value: id)], accessToken: accessToken)
-        return try JSONDecoder().decode(DocumentResponse.self, from: data).document
+        try await getDocuments(query: [URLQueryItem(name: "id", value: id)], accessToken: accessToken,
+                               decoding: DocumentResponse.self).document
     }
 
     /// The PATCH body. Absent keys are left alone server-side, so a save that

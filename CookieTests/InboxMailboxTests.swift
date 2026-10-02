@@ -25,6 +25,37 @@ final class InboxMailboxTests: XCTestCase {
         }
     }
 
+    func testMarkingAnUnreadEmailDoneDecrementsAndRollbackRestoresTheCount() async throws {
+        let mailbox = InboxMailbox()
+        await mailbox.load(refresh: true) { _ in self.page([UUID().uuidString, UUID().uuidString]) }
+        let email = try XCTUnwrap(mailbox.emails.last)
+        XCTAssertTrue(email.isUnread)
+
+        let index = try XCTUnwrap(mailbox.removeDone(email))
+        XCTAssertEqual(mailbox.unreadCount, 59)
+        XCTAssertFalse(mailbox.emails.contains(email))
+
+        mailbox.restoreDone(email, at: index)
+        XCTAssertEqual(mailbox.unreadCount, 60)
+        XCTAssertEqual(mailbox.emails.last, email)
+    }
+
+    func testMarkingAReadEmailDoneKeepsTheUnreadCount() async throws {
+        let mailbox = InboxMailbox()
+        await mailbox.load(refresh: true) { _ in self.page([UUID().uuidString]) }
+        let unread = try XCTUnwrap(mailbox.emails.first)
+        let read = DummyEmail(id: unread.id, sender: unread.sender, initial: unread.initial, color: unread.color,
+                              time: unread.time, subject: unread.subject, preview: unread.preview,
+                              isUnread: false, filter: unread.filter)
+        mailbox.emails = [read]
+
+        let index = try XCTUnwrap(mailbox.removeDone(read))
+        XCTAssertEqual(mailbox.unreadCount, 60)
+        mailbox.restoreDone(read, at: index)
+        XCTAssertEqual(mailbox.unreadCount, 60)
+        XCTAssertNil(mailbox.removeDone(DummyEmail.sample[0]))
+    }
+
     func testLoadsBeyondFiftyMessagesAndDeduplicatesOverlappingPages() async {
         let mailbox = InboxMailbox()
         let ids = (0..<60).map { _ in UUID().uuidString }

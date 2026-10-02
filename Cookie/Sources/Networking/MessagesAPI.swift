@@ -85,10 +85,11 @@ struct MessagesAPI {
     /// The inbox list deliberately omits `body_html`, so this is the only
     /// source of the complete message text.
     static func fetchMessageBody(id: String, accessToken: String) async throws -> MessageBody {
-        let url = try APIClient.url(
+        try await APIClient.get(
             CookieAPIEndpoints.messages,
-            query: [URLQueryItem(name: "id", value: id), URLQueryItem(name: "calendar", value: "deferred")]
+            query: [URLQueryItem(name: "id", value: id), URLQueryItem(name: "calendar", value: "deferred")],
+            accessToken: accessToken,
+            decoding: MessageBody.self
         )
-        return try await APIClient.send(APIClient.request(url, accessToken: accessToken), decoding: MessageBody.self)
     }
 }

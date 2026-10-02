@@ -37,7 +37,7 @@ final class AuthenticationManager {
     /// only a credentials failure (no stored session, rejected refresh token) signs the user out.
     func restoreSession() async {
         APIClient.onUnauthorized = { [weak self] in
-            Task { await self?.handleUnauthorized() }
+            await self?.handleUnauthorized()
         }
 
         guard credentialsManager.canRenew() || credentialsManager.hasValid() else {
@@ -111,22 +111,29 @@ final class AuthenticationManager {
     }
 
     /// An API answered 401 to a token that looked valid locally. Force one
-    /// renewal: success means the next request carries a fresh token, while a
-    /// rejected refresh token means the session is over.
-    func handleUnauthorized() async {
-        guard !isRenewingAfterUnauthorized, state != .unauthenticated else { return }
-        isRenewingAfterUnauthorized = true
-        defer { isRenewingAfterUnauthorized = false }
+    /// renewal and return the fresh access token so the caller can retry,
+    /// or `nil` if renewal failed; a rejected refresh token means the session
+    /// is over. Concurrent 401s share the one in-flight renewal.
+    func handleUnauthorized() async -> String? {
+        if let renewalTask { return await renewalTask.value }
+        guard state != .unauthenticated else { return nil }
 
         let generation = sessionGeneration
-        do {
-            _ = try await credentialsManager.renew()
-            discardIfSignedOut(since: generation)
-        } catch let error where Self.requiresSignIn(error) {
-            signOutLocally()
-        } catch {
-            // Transient failure; leave the session for the next call to retry.
+        let task = Task { () -> String? in
+            do {
+                let credentials = try await credentialsManager.renew()
+                return discardIfSignedOut(since: generation) ? nil : credentials.accessToken
+            } catch let error where Self.requiresSignIn(error) {
+                signOutLocally()
+                return nil
+            } catch {
+                // Transient failure; leave the session for the next call to retry.
+                return nil
+            }
         }
+        renewalTask = task
+        defer { renewalTask = nil }
+        return await task.value
     }
 
     /// Whether a credentials failure means the stored session is unusable and
@@ -160,7 +167,7 @@ final class AuthenticationManager {
         }
     }
 
-    @ObservationIgnored private var isRenewingAfterUnauthorized = false
+    @ObservationIgnored private var renewalTask: Task<String?, Never>?
     /// Bumped on every local sign-out, so an in-flight renewal can tell that
     /// the session it refreshed was signed out while it was on the network.
     @ObservationIgnored private var sessionGeneration = 0

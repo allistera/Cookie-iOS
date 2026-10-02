@@ -1,3 +1,4 @@
+import OSLog
 import SwiftUI
 import WebKit
 
@@ -123,15 +124,27 @@ struct EmailBodyWebView: UIViewRepresentable {
         "action":{"type":"block"}}]
         """
 
+        private static let logger = Logger(subsystem: "com.cookie.ios", category: "EmailBodyWebView")
+
+        /// `nil` means the block rule is unavailable; the caller must then
+        /// fail closed. A failure isn't cached, so the next load retries.
         private static func remoteBlockRuleList() async -> WKContentRuleList? {
             if let cached = cachedRemoteBlockRuleList { return cached }
-            guard let store = WKContentRuleListStore.default() else { return nil }
-            let list = try? await store.compileContentRuleList(
-                forIdentifier: remoteBlockRuleIdentifier,
-                encodedContentRuleList: remoteBlockRuleJSON
-            )
-            cachedRemoteBlockRuleList = list
-            return list
+            guard let store = WKContentRuleListStore.default() else {
+                logger.error("No content rule list store; remote content stays blocked")
+                return nil
+            }
+            do {
+                let list = try await store.compileContentRuleList(
+                    forIdentifier: remoteBlockRuleIdentifier,
+                    encodedContentRuleList: remoteBlockRuleJSON
+                )
+                cachedRemoteBlockRuleList = list
+                return list
+            } catch {
+                logger.error("Remote content block rule failed to compile: \(error.localizedDescription, privacy: .public)")
+                return nil
+            }
         }
 
         func observeContentHeight(of webView: WKWebView) {
@@ -190,11 +203,21 @@ struct EmailBodyWebView: UIViewRepresentable {
                 controller.removeAllContentRuleLists()
                 if let ruleList {
                     controller.add(ruleList)
+                } else if blocksRemoteImages {
+                    // Fail closed: without the block rule the sender's HTML
+                    // would load its tracking pixels unblocked.
+                    webView.loadHTMLString(Self.document(html: Self.blockedContentPlaceholder), baseURL: nil)
+                    return
                 }
 
                 webView.loadHTMLString(Self.document(html: html), baseURL: nil)
             }
         }
+
+        /// Shown in place of the message when remote content must be blocked
+        /// but the block rule couldn't be compiled.
+        nonisolated static let blockedContentPlaceholder =
+            #"<p style="color: gray">This message can't be shown safely right now. Try opening it again.</p>"#
 
         /// Wraps the raw email HTML in a minimal document with mobile viewport
         /// and system typography. No sanitization happens here — safety comes

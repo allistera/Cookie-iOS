@@ -17,6 +17,10 @@ struct NotesView: View {
     @State private var pageCursors: [String: String] = [:]
     @State private var loadingFolders: Set<String> = []
     @State private var generation = 0
+    /// Set once the first load settles (success or a real failure), so
+    /// popping back from a note keeps the loaded pages and doesn't race the
+    /// editor's exit save with a reload.
+    @State private var hasLoaded = false
 
     private var rows: [DocumentTreeRow] {
         DocumentTree.flatten(
@@ -29,6 +33,12 @@ struct NotesView: View {
 
     private var isEmpty: Bool {
         folders.isEmpty && documents.isEmpty
+    }
+
+    /// The first-appearance load; pull-to-refresh reloads explicitly.
+    private func loadWorkspaceIfNeeded() async {
+        guard !hasLoaded else { return }
+        await loadWorkspace()
     }
 
     private func loadWorkspace() async {
@@ -45,11 +55,17 @@ struct NotesView: View {
             folders = workspace.folders
             documents = workspace.documents
             loadErrorMessage = nil
+            hasLoaded = true
             await loadFolders(Array(expandedFolderIDs))
         } catch {
+            guard requestGeneration == generation else { return }
+            // A cancelled load (the view disappeared mid-request) is not a
+            // failure; leave the state so the next appearance retries.
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
             loadErrorMessage = "Couldn't load your notes. Pull to refresh to try again."
+            hasLoaded = true
         }
-        isLoadingInitialPage = false
+        if requestGeneration == generation { isLoadingInitialPage = false }
     }
 
     private func loadFolder(_ id: String) async {
@@ -179,7 +195,7 @@ struct NotesView: View {
             }
         }
         .task {
-            await loadWorkspace()
+            await loadWorkspaceIfNeeded()
         }
         .onChange(of: expandedFolderIDs) {
             ExpandedFolderStore.save(expandedFolderIDs)

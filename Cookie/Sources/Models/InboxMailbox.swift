@@ -58,4 +58,22 @@ final class InboxMailbox {
             hasLoaded = true
         }
     }
+
+    /// Optimistically removes an email marked Done, dropping the unread badge
+    /// if it was unread. Returns where it was for `restoreDone(_:at:)`, or
+    /// `nil` if the loaded pages didn't hold it.
+    func removeDone(_ email: DummyEmail) -> Int? {
+        guard let index = emails.firstIndex(where: { $0.id == email.id }) else { return nil }
+        let removed = emails.remove(at: index)
+        if removed.isUnread { unreadCount = max(0, unreadCount - 1) }
+        return index
+    }
+
+    /// Rolls back `removeDone` after the server rejected the change. A no-op
+    /// if a refresh has already brought the email back.
+    func restoreDone(_ email: DummyEmail, at index: Int) {
+        guard !emails.contains(where: { $0.id == email.id }) else { return }
+        emails.insert(email, at: min(index, emails.count))
+        if email.isUnread { unreadCount += 1 }
+    }
 }

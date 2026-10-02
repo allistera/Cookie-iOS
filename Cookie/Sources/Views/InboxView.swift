@@ -88,8 +88,8 @@ struct InboxView: View {
 
     /// Opens the email an ntfy notification's "Open in Cookie app" button
     /// names. The inbox page is often still loading when the link lands, so
-    /// an id that is not on screen waits for the current load (or starts a
-    /// refresh) rather than giving up on the first miss — the same rule as
+    /// an id that is not on screen waits for the current or initial load (or
+    /// starts a refresh) rather than giving up on the first miss — the same rule as
     /// the web's `/inbox?open=` route.
     private func consumeDeepLink() {
         guard case .email(let id)? = deepLink else { return }
@@ -98,9 +98,12 @@ struct InboxView: View {
         pendingEmailID = id
         if mailbox.emails.contains(where: { $0.id == id }) {
             resolvePendingEmail()
-        } else if !mailbox.isLoading {
+        } else if mailbox.hasLoaded, !mailbox.isLoading {
             Task { await loadEmails() }
         }
+        // Before the first load settles (a cold launch from the link), the
+        // `.task` initial load resolves the pending id; refreshing here too
+        // would fetch the first page twice.
     }
 
     /// Runs after every inbox load: pushes the awaited email if it arrived,
@@ -216,11 +219,10 @@ struct InboxView: View {
     private func markDone(_ email: DummyEmail) {
         // A row can be in the inbox page, the search results, or both — a
         // search can surface mail beyond the loaded inbox page.
-        let originalIndex = mailbox.emails.firstIndex(where: { $0.id == email.id })
         let originalSearchIndex = searchResults.firstIndex(where: { $0.id == email.id })
-        withAnimation {
-            mailbox.emails = InboxEmailActions.markingDone(emailID: email.id, in: mailbox.emails)
+        let originalIndex = withAnimation {
             searchResults = InboxEmailActions.markingDone(emailID: email.id, in: searchResults)
+            return mailbox.removeDone(email)
         }
 
         Task {
@@ -235,8 +237,8 @@ struct InboxView: View {
                 // was, mirroring Cookie-Web's `archiveEmail` undo-on-failure
                 // behavior, rather than clobbering the whole list.
                 withAnimation {
-                    if let originalIndex, !mailbox.emails.contains(where: { $0.id == email.id }) {
-                        mailbox.emails.insert(email, at: min(originalIndex, mailbox.emails.count))
+                    if let originalIndex {
+                        mailbox.restoreDone(email, at: originalIndex)
                     }
                     if let originalSearchIndex,
                        !searchResults.contains(where: { $0.id == email.id }) {

@@ -79,7 +79,7 @@ struct EmailsAPI {
         if let before {
             queryItems.append(URLQueryItem(name: "before", value: before))
         }
-        let url = try APIClient.url(CookieAPIEndpoints.emails, query: queryItems)
-        return try await APIClient.send(APIClient.request(url, accessToken: accessToken), decoding: EmailListResponse.self)
+        return try await APIClient.get(CookieAPIEndpoints.emails, query: queryItems, accessToken: accessToken,
+                                       decoding: EmailListResponse.self)
     }
 }

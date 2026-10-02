@@ -27,7 +27,8 @@ struct EmailDetailView: View {
     /// detail screen opens — the inbox list only carries the snippet.
     private enum BodyState {
         case loading
-        case loaded(MessageBody)
+        /// `hasRemoteContent` is scanned once on load, not on every render.
+        case loaded(MessageBody, hasRemoteContent: Bool)
         case unavailable
     }
 
@@ -86,8 +87,12 @@ struct EmailDetailView: View {
                 id: email.id.uuidString.lowercased(),
                 accessToken: accessToken
             )
-            bodyState = .loaded(body)
+            let hasRemoteContent = body.renderableHtml.map(EmailBodyWebView.hasBlockedRemoteImages) ?? false
+            bodyState = .loaded(body, hasRemoteContent: hasRemoteContent)
         } catch {
+            // Cancellation (the view went away mid-request) is not a failure:
+            // stay `.loading` so the next appearance retries the fetch.
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
             // Fall back to the list snippet rather than an error screen.
             bodyState = .unavailable
         }
@@ -175,7 +180,7 @@ struct EmailDetailView: View {
             HStack(spacing: 12) {
                 Image(systemName: "ellipsis")
                     .foregroundStyle(.secondary)
-                Text(email.time)
+                Text(email.fullTimestamp)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -235,9 +240,9 @@ struct EmailDetailView: View {
             Text(email.preview)
                 .font(.subheadline)
 
-        case .loaded(let body):
+        case .loaded(let body, let hasRemoteContent):
             if let html = body.renderableHtml {
-                htmlBody(html)
+                htmlBody(html, hasRemoteContent: hasRemoteContent)
             } else if let text = body.renderableText {
                 Text(text)
                     .font(.subheadline)
@@ -248,9 +253,9 @@ struct EmailDetailView: View {
         }
     }
 
-    private func htmlBody(_ html: String) -> some View {
+    private func htmlBody(_ html: String, hasRemoteContent: Bool) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            if !showRemoteImages && EmailBodyWebView.hasBlockedRemoteImages(html) {
+            if !showRemoteImages && hasRemoteContent {
                 Button {
                     showRemoteImages = true
                 } label: {
