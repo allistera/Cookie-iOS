@@ -92,10 +92,12 @@ final class APIClientUnauthorizedRetryTests: XCTestCase {
         URLProtocol.registerClass(StubProtocol.self)
     }
 
-    override func tearDown() async throws {
+    override func tearDown() {
         URLProtocol.unregisterClass(StubProtocol.self)
-        await MainActor.run { APIClient.onUnauthorized = nil }
-        try await super.tearDown()
+        // XCTest runs a @MainActor test case's tearDown on the main thread,
+        // but the override itself is nonisolated.
+        MainActor.assumeIsolated { APIClient.onUnauthorized = nil }
+        super.tearDown()
     }
 
     func testA401IsRetriedOnceWithTheRenewedToken() async throws {
