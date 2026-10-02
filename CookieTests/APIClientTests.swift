@@ -92,10 +92,10 @@ final class APIClientUnauthorizedRetryTests: XCTestCase {
         URLProtocol.registerClass(StubProtocol.self)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         URLProtocol.unregisterClass(StubProtocol.self)
-        APIClient.onUnauthorized = nil
-        super.tearDown()
+        await MainActor.run { APIClient.onUnauthorized = nil }
+        try await super.tearDown()
     }
 
     func testA401IsRetriedOnceWithTheRenewedToken() async throws {
