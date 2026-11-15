@@ -5,8 +5,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/auth0/Auth0.swift",
       "state" : {
-        "revision" : "5919f5bd5277bc5211151c8a7fe6d58b2dee41bc",
-        "version" : "3.3.0"
+        "revision" : "aee409f35a4ed5a26f52de15d3cffcadab01d6d4",
+        "version" : "3.3.1"
       }
     },
     {
