@@ -6,7 +6,7 @@ Native SwiftUI email client for Cookie. See `AGENTS.md` for working rules and
 ## Requirements
 
 - Xcode 27.0 (build 27A266a)
-- XcodeGen 2.46.0 and SwiftLint 0.65.1 (`brew install xcodegen swiftlint`)
+- XcodeGen 2.48.0 and SwiftLint 0.65.1 (`brew install xcodegen swiftlint`)
 
 Pinned versions live in `scripts/toolchain.env`.
 
