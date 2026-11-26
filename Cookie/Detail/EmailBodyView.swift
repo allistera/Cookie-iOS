@@ -8,9 +8,10 @@ import WebKit
 ///
 /// Defence in depth, matching Cookie-Web's sandboxed reader:
 /// - JavaScript is disabled, so nothing in the email can execute.
+/// - Tracking images (open pixels) are removed from the HTML before it is
+///   loaded, whatever the image setting (see `TrackingImages`).
 /// - Remote http(s) subresources (images, stylesheets, fonts, media, raw
-///   fetches) are blocked by a content rule list until the user opts in,
-///   so tracking pixels do not fire on open.
+///   fetches) are blocked by a content rule list until the user opts in.
 /// - A non-persistent data store keeps no cookies or cache between messages.
 /// - Link taps go to the system (http, https, mailto only); nothing
 ///   navigates in place.
@@ -183,8 +184,10 @@ struct EmailBodyView: UIViewRepresentable {
                         baseURL: Self.baseURL)
                     return
                 }
+                let renderedHTML = TrackingImages.removingTrackers(from: html)
                 webView.loadHTMLString(
-                    Self.document(html: html, blocksRemoteContent: blocksRemoteContent, baseFontSize: baseFontSize),
+                    Self.document(
+                        html: renderedHTML, blocksRemoteContent: blocksRemoteContent, baseFontSize: baseFontSize),
                     baseURL: Self.baseURL)
             }
         }
