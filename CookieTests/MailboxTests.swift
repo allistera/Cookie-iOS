@@ -53,10 +53,11 @@ private actor URLLog {
 }
 
 /// Routes by path: `/categories` always succeeds; `/emails` answers from a
-/// queue of (status, body), repeating the last entry.
+/// queue of (status, body), repeating the last entry. `gate` holds the
+/// `/emails` request numbered `gatedRequest`, counting from zero.
 @MainActor
 private func makeMailbox(
-    emailResponses: [(Int, String)], gateFirstEmails gate: Gate? = nil, log: URLLog? = nil
+    emailResponses: [(Int, String)], gateFirstEmails gate: Gate? = nil, gatedRequest: Int = 0, log: URLLog? = nil
 ) -> Mailbox {
     let tokens = TokenProvider(current: { "t" }, renewed: { "t" }, invalidate: {})
     let counter = Counter()
@@ -68,7 +69,7 @@ private func makeMailbox(
             (status, body) = (200, categoriesJSON)
         } else {
             let index = await counter.next()
-            if index == 0, let gate { await gate.wait() }
+            if index == gatedRequest, let gate { await gate.wait() }
             (status, body) = emailResponses[min(index, emailResponses.count - 1)]
         }
         guard let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil) else {
@@ -256,8 +257,32 @@ struct MailboxTests {
         await gate.open()
         await refresh.value
 
+        // The refresh still lands; only the stale flag and count are not applied.
         #expect(mailbox.unreadCount == 0)
-        #expect(mailbox.emails.isEmpty)
+        #expect(mailbox.phase == .loaded)
+        #expect(mailbox.emails.map(\.id) == ["a"])
+        #expect(mailbox.emails.first?.isUnread == false)
+    }
+
+    @Test func confirmedReadDoesNotDiscardAnInFlightLoadMore() async {
+        let gate = Gate()
+        let first = #"{"emails":[\#(row("a"))],"nextCursor":"cur","unreadCount":2}"#
+        let second = #"{"emails":[\#(row("b", unread: true))],"nextCursor":null}"#
+        let mailbox = makeMailbox(
+            emailResponses: [(200, first), (200, second)], gateFirstEmails: gate, gatedRequest: 1)
+        await mailbox.refresh()
+        let loadMore = Task { await mailbox.loadMore() }
+        while await !gate.isWaiting { await Task.yield() }
+
+        mailbox.markRead("b", wasUnread: true, isInboxMessage: true)
+        await gate.open()
+        await loadMore.value
+
+        #expect(mailbox.emails.map(\.id) == ["a", "b"])
+        #expect(mailbox.emails.last?.isUnread == false)
+        #expect(mailbox.unreadCount == 1)
+        #expect(mailbox.nextCursor == nil)
+        #expect(!mailbox.loadMoreFailed)
     }
 
     @Test func pagingDoesNotCreateDuplicateRowsWithinOneResponse() async {
