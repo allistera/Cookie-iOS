@@ -41,7 +41,7 @@ enum EmailReference {
             var cursor = initialCursor(for: folder, mailbox: mailbox)
             var seenCursors = Set<String>()
 
-            while true {
+            for _ in 0..<maxPagesPerFolder {
                 try Task.checkCancellation()
                 if let cursor, !seenCursors.insert(cursor).inserted { break }
                 let page: InboxPage = try await client.get(CookieAPIEndpoints.mailbox(folder: folder, before: cursor))
@@ -62,9 +62,10 @@ enum EmailReference {
         return .metadataUnavailable(body: body)
     }
 
-    private static let searchableFolders: [MailboxFolder] = [
-        .inbox, .done, .sent, .spam, .screening, .blocked,
-    ]
+    /// AI Today cites recent inbox triage, so older mail and other folders are not walked.
+    private static let searchableFolders: [MailboxFolder] = [.inbox, .screening]
+    /// Bounds the fallback to a few requests per folder before the reader opens.
+    private static let maxPagesPerFolder = 3
 
     @MainActor
     private static func initialCursor(for folder: MailboxFolder, mailbox: Mailbox) -> String? {

@@ -98,6 +98,35 @@ struct EmailReferenceTests {
         #expect(resolution == .metadataUnavailable(body: body))
     }
 
+    @Test func fallbackSearchStopsAfterAFewInboxAndScreeningPages() async throws {
+        let log = URLLog()
+        let tokens = TokenProvider(current: { "t" }, renewed: { "t" }, invalidate: {})
+        let client = APIClient(tokens: tokens) { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            await log.append(url)
+            let count = await log.urls.count
+            // Every page points at another one, as a large folder would.
+            let body = #"{"emails":[],"nextCursor":"cursor-\#(count)"}"#
+            guard let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)
+            else { throw URLError(.badURL) }
+            return (Data(body.utf8), response)
+        }
+        let mailbox = Mailbox(client: client)
+        let body = MessageBody(id: "target", subject: "Known body", bodyHtml: nil, bodyText: "Body")
+
+        let resolution = try await EmailReference.resolve(
+            for: "target", unread: true, from: body, mailbox: mailbox, client: client)
+
+        #expect(resolution == .metadataUnavailable(body: body))
+        let urls = await log.urls
+        let folders = urls.compactMap { url in
+            URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "folder" })?.value
+        }
+        #expect(Set(folders) == ["inbox", "screening"])
+        #expect(urls.count == 6)
+    }
+
     @Test func threadOnlyReferenceIsTreatedAsInboxMail() async throws {
         let tokens = TokenProvider(current: { "t" }, renewed: { "t" }, invalidate: {})
         let client = APIClient(tokens: tokens) { request in
