@@ -217,4 +217,10 @@ struct APIClientTests {
         let client = makeClient([StubResponse(status: 200, body: "not json")], log: log)
         let _: EmptyResponse = try await client.get(CookieAPIEndpoints.categories)
     }
+
+    @Test func productionSessionKeepsNoResponseCache() {
+        let configuration = APIClient.session.configuration
+        #expect(configuration.urlCache == nil)
+        #expect(configuration.requestCachePolicy == .reloadIgnoringLocalCacheData)
+    }
 }

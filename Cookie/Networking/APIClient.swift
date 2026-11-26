@@ -4,12 +4,21 @@ import Foundation
 struct APIClient: Sendable {
     typealias Transport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
+    /// Ephemeral and without a URLCache, so mail JSON is not cached on disk or
+    /// in memory where it could outlive a sign-out.
+    static let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }()
+
     private let tokens: TokenProvider
     private let transport: Transport
 
     init(
         tokens: TokenProvider,
-        transport: @escaping Transport = { try await URLSession.shared.data(for: $0) }
+        transport: @escaping Transport = { try await APIClient.session.data(for: $0) }
     ) {
         self.tokens = tokens
         self.transport = transport
