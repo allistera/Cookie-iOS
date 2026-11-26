@@ -92,4 +92,27 @@ struct EmailSummaryTests {
         #expect(!other.isSent)
         #expect(other.displayName == "a@example.com")
     }
+
+    @Test func plainStringRecipientIsTheAddress() throws {
+        let json = """
+            {"id":"1","from_address":"me@example.com","sent_at":"2026-10-05T09:48:12Z","is_unread":false,
+            "labels":[],"is_sent":true,"recipients":{"to":["jordan@example.com"]}}
+            """
+        let email = try JSONDecoder.cookieAPI().decode(EmailSummary.self, from: Data(json.utf8))
+        #expect(email.recipients?.primary == [Recipient(name: nil, address: "jordan@example.com")])
+        #expect(email.displayName == "To: jordan@example.com")
+    }
+
+    @Test func malformedRecipientsDoNotFailThePage() throws {
+        let json = """
+            {"emails":[{"id":"1","from_address":"me@example.com","sent_at":"2026-10-05T09:48:12Z",
+            "is_unread":false,"labels":[],"is_sent":true,"recipients":{"to":[42]}},
+            {"id":"2","from_address":"a@example.com","sent_at":"2026-10-04T09:48:12Z","is_unread":true,
+            "labels":[],"recipients":"jordan@example.com"}],"nextCursor":null}
+            """
+        let page = try JSONDecoder.cookieAPI().decode(InboxPage.self, from: Data(json.utf8))
+        #expect(page.emails.map(\.id) == ["1", "2"])
+        #expect(page.emails.allSatisfy { $0.recipients == nil })
+        #expect(page.emails.first?.displayName == "me@example.com")
+    }
 }
