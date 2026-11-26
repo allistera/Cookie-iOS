@@ -56,7 +56,7 @@ enum TrackingImages {
         guard copiedUpTo > 0 else { return html }
         kept += bytes[copiedUpTo...]
         // Removed ranges start at "<" and end after ">", so no UTF-8 sequence is split.
-        return String(decoding: kept, as: UTF8.self)
+        return String(bytes: kept, encoding: .utf8) ?? html
     }
 
     /// The offset of the next `<img` start tag, matched without regard to case.
@@ -157,7 +157,7 @@ private struct TagScanner {
         // The first byte always belongs to the name, even a stray "=".
         index += 1
         skip { !isHTMLSpace($0) && !"/>=".utf8.contains($0) }
-        return String(decoding: bytes[start..<index], as: UTF8.self).lowercased()
+        return (String(bytes: bytes[start..<index], encoding: .utf8) ?? "").lowercased()
     }
 
     /// The value after an "=", "" for a bare attribute, or nil when a quote never closes.
@@ -171,10 +171,10 @@ private struct TagScanner {
         guard quote == UInt8(ascii: "\"") || quote == UInt8(ascii: "'") else {
             let start = index
             skip { !isHTMLSpace($0) && $0 != UInt8(ascii: ">") }
-            return String(decoding: bytes[start..<index], as: UTF8.self)
+            return String(bytes: bytes[start..<index], encoding: .utf8) ?? ""
         }
         guard let close = bytes[(index + 1)...].firstIndex(of: quote) else { return nil }
-        let value = String(decoding: bytes[(index + 1)..<close], as: UTF8.self)
+        let value = String(bytes: bytes[(index + 1)..<close], encoding: .utf8) ?? ""
         index = close + 1
         return value
     }
