@@ -28,6 +28,25 @@ struct Recipient: Decodable, Hashable, Sendable {
     }
 }
 
+extension Recipient {
+    private enum CodingKeys: String, CodingKey {
+        case name, address
+    }
+
+    /// Accepts `{name, address}` or a bare address string, which some stored rows hold.
+    init(from decoder: any Decoder) throws {
+        if let address = try? decoder.singleValueContainer().decode(String.self) {
+            self.init(name: nil, address: address)
+            return
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            name: try container.decodeIfPresent(String.self, forKey: .name),
+            address: try container.decodeIfPresent(String.self, forKey: .address)
+        )
+    }
+}
+
 /// The `recipients` column: `{to, cc, bcc}` lists. Only `to` is read.
 struct Recipients: Decodable, Hashable, Sendable {
     let primary: [Recipient]?
@@ -89,7 +108,8 @@ struct EmailSummary: Decodable, Hashable, Identifiable, Sendable {
         labels = try container.decode([EmailLabel].self, forKey: .labels)
         category = try container.decodeIfPresent(EmailCategory.self, forKey: .category)
         isSent = try container.decodeIfPresent(Bool.self, forKey: .isSent) ?? false
-        recipients = try container.decodeIfPresent(Recipients.self, forKey: .recipients)
+        // Recipients only label sent rows; a malformed value must not fail the whole page.
+        recipients = try? container.decodeIfPresent(Recipients.self, forKey: .recipients)
     }
 
     var senderName: String {
