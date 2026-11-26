@@ -37,10 +37,6 @@ final class SidebarModel {
         loadTask = Task { await loadLists() }
     }
 
-    func close() {
-        isOpen = false
-    }
-
     func select(_ selection: SidebarSelection) {
         self.selection = selection
         isOpen = false
