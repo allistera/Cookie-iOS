@@ -165,19 +165,6 @@ struct MailboxTests {
         #expect(mailbox.emails.map(\.id) == ["new"])
     }
 
-    @Test func markReadAndUnreadUpdateTheRow() async {
-        let mailbox = makeMailbox(emailResponses: [(200, #"{"emails":[\#(row("a", unread: true))],"nextCursor":null}"#)]
-        )
-        await mailbox.refresh()
-
-        mailbox.markRead("a")
-        #expect(mailbox.emails.first?.isUnread == false)
-        #expect(mailbox.tabs.last?.unreadCount == 0)
-
-        mailbox.markUnread("a")
-        #expect(mailbox.emails.first?.isUnread == true)
-    }
-
     @Test func selectingAFolderDropsRowsRequestsItAndShowsOneTab() async {
         let log = URLLog()
         let mailbox = makeMailbox(
@@ -218,10 +205,6 @@ struct MailboxTests {
         #expect(mailbox.unreadCount == 2)
         #expect(mailbox.emails.first?.isUnread == false)
         #expect(mailbox.tabs.last?.unreadCount == 0)
-
-        mailbox.markUnread("a")
-        mailbox.markUnread("a")
-        #expect(mailbox.unreadCount == 3)
     }
 
     @Test func citedUnreadOutsideTheLoadedPageUpdatesBadgeExactlyOnce() async {

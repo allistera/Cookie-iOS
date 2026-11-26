@@ -131,11 +131,6 @@ final class Mailbox {
         setUnread(id, false, wasUnread: wasUnread, isInboxMessage: isInboxMessage)
     }
 
-    /// Restores the unread flag after the server rejected a mark-read.
-    func markUnread(_ id: String) {
-        setUnread(id, true)
-    }
-
     private func setUnread(
         _ id: String, _ isUnread: Bool, wasUnread: Bool? = nil, isInboxMessage: Bool? = nil
     ) {
